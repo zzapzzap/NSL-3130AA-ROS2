@@ -934,10 +934,15 @@ void roboscanPublisher::initialise()
 	load_params();
 	initNslLibrary();    // sets camera_id via USB serial auto-detect
 
-	// frame_id always derived from USB serial to avoid TF conflicts in multi-camera setups
+	// frame_id derived from USB serial; NSL_FRAME_ID overrides for IP-based naming (e.g. cam_59_lidar_frame)
 	viewerParam.frame_id = viewerParam.camera_id.empty()
 	    ? "lidar_frame"
 	    : viewerParam.camera_id + "_lidar_frame";
+	{
+		const char* env_frame = std::getenv("NSL_FRAME_ID");
+		if (env_frame && env_frame[0] != '\0')
+			viewerParam.frame_id = env_frame;
+	}
 
 	tf_static_broadcaster_ = std::make_shared<tf2_ros::StaticTransformBroadcaster>(this);
 	publishWorldTf();

@@ -70,10 +70,11 @@ def _rotmat_to_quat(R):
 
 class ExtrinsicTfNode(Node):
 
-    def __init__(self, calib_dir: str, camera_id: str, lidar_topic: str):
+    def __init__(self, calib_dir: str, camera_id: str, lidar_topic: str, frame_prefix: str = ''):
         super().__init__('extrinsic_tf_node')
         self._calib_dir = Path(os.path.expanduser(calib_dir))
         self._camera_id = camera_id
+        self._frame_prefix = frame_prefix  # overrides TF child-frame name; calib lookup still uses camera_id
         self._bc = StaticTransformBroadcaster(self)
         self._done = False
         self._warned = False
@@ -115,7 +116,7 @@ class ExtrinsicTfNode(Node):
         R_lc = R.T                       # camera axes in LiDAR frame
         t_lc = -R.T @ t                  # camera origin in LiDAR frame
         q = _rotmat_to_quat(R_lc)
-        cam_frame = f'{camera_id}_camera_frame'
+        cam_frame = f'{self._frame_prefix}_camera_frame' if self._frame_prefix else f'{camera_id}_camera_frame'
 
         ts = TransformStamped()
         ts.header.stamp = self.get_clock().now().to_msg()
@@ -141,12 +142,15 @@ def main():
     ap.add_argument('--calib-dir', required=True,
                     help='Directory holding {camera_id}_extrinsic.yml')
     ap.add_argument('--camera-id', default='',
-                    help='Camera id; if empty, derived from the point-cloud frame_id')
+                    help='Camera serial for calibration file lookup; if empty, derived from point-cloud frame_id')
+    ap.add_argument('--frame-prefix', default='',
+                    help='Prefix for TF frame names (e.g. cam_59 → cam_59_camera_frame). '
+                         'Defaults to camera-id when not set.')
     ap.add_argument('--lidar-topic', default='/camera/point_cloud')
     args, ros_args = ap.parse_known_args()
 
     rclpy.init(args=ros_args or None)
-    node = ExtrinsicTfNode(args.calib_dir, args.camera_id, args.lidar_topic)
+    node = ExtrinsicTfNode(args.calib_dir, args.camera_id, args.lidar_topic, args.frame_prefix)
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

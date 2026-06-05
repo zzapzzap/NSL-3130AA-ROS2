@@ -45,25 +45,37 @@ def generate_launch_description():
         except Exception:
             return ''
 
-    def _resolve_namespace(context, serial):
-        """Resolve the per-device namespace so topics come up as /<device_id>/<topic>
+    def _detect_ip_octet():
+        """Return last octet of this machine's 192.168.0.x address ('' if not found)."""
+        try:
+            out = subprocess.check_output(
+                ['ip', '-4', 'addr'], text=True, stderr=subprocess.DEVNULL)
+            for line in out.splitlines():
+                m = re.search(r'inet 192\.168\.0\.(\d+)/', line)
+                if m:
+                    return m.group(1)
+        except Exception:
+            pass
+        return ''
 
-          namespace:=auto    → the camera serial (device id); DEFAULT.
-                               Falls back to '' (no namespace) when no serial detected.
-          namespace:=''      → no namespace → /point_cloud, /rgb/image_raw, ...
+    def _resolve_namespace(context, ip_octet):
+        """Resolve the per-device namespace based on the machine's IP last octet.
+
+          namespace:=auto    → cam_{last_octet}  e.g. cam_59; DEFAULT.
+                               Falls back to '' when no 192.168.0.x address found.
+          namespace:=''      → no namespace → /camera/point_cloud, ...
           namespace:=<name>  → used verbatim.
         """
         ns = LaunchConfiguration('namespace').perform(context).strip().strip('/')
         if ns.lower() == 'auto':
-            if serial:
-                ns = re.sub(r'[^A-Za-z0-9_]', '_', serial)   # ROS name-safe
-                if ns[0].isdigit():
-                    ns = '_' + ns
+            if ip_octet:
+                ns = f'cam_{ip_octet}'
+                print(f'[camera] namespace: /{ns}  (auto from 192.168.0.{ip_octet})')
             else:
                 ns = ''
-                print('[camera] namespace:=auto but no serial detected → running without namespace')
+                print('[camera] namespace:=auto but no 192.168.0.x address found → no namespace')
         if ns:
-            print(f'[camera] namespace: /{ns}  (topics → /{ns}/point_cloud, /{ns}/rgb/image_raw, ...)')
+            print(f'[camera] topics → /{ns}/camera/point_cloud, /{ns}/camera/rgb/image_raw, ...')
         return ns
 
     def _resolve_params_file(context, serial):
@@ -108,15 +120,13 @@ def generate_launch_description():
         return f'/{ns}/{rel}' if ns else f'/{rel}'
 
     def _rviz_config(ns, serial):
-        """Bundled rviz config points at /camera/... and a sample serial frame.
-        Rewrite a temp copy so rviz subscribes to the live topics: /camera/<x>
-        becomes /<ns>/<x> (or /<x> when no namespace), and the sample serial frame
-        becomes this camera's (Fixed Frame stays 'reference_lidar_frame')."""
-        prefix = f'/{ns}/' if ns else '/'
+        """Rewrite the bundled rviz config so topics match the live namespace.
+        /camera/rgb/image_raw → /{ns}/camera/rgb/image_raw (or unchanged when ns='')."""
+        cam_prefix = f'/{ns}/camera/' if ns else '/camera/'
         try:
             with open(rviz_config) as f:
                 content = f.read()
-            content = content.replace('/camera/', prefix)
+            content = content.replace('/camera/', cam_prefix)
             if serial:
                 content = content.replace('N00A5060D', serial)
             out = os.path.join('/tmp', f'roboscan_{ns or "nons"}.rviz')
@@ -131,8 +141,11 @@ def generate_launch_description():
 
     def _fleet_setup(context):
         serial = _detect_serial()
-        ns = _resolve_namespace(context, serial)
+        ip_octet = _detect_ip_octet()
+        ns = _resolve_namespace(context, ip_octet)
         params_file = _resolve_params_file(context, serial)
+
+        frame_id = f'{ns}_lidar_frame' if ns else ''
 
         actions = [Node(
             package='roboscan_nsl3130',
@@ -141,10 +154,13 @@ def generate_launch_description():
             output='screen',
             parameters=params if params else None,
             additional_env={'NSL_CALIB_DIR': calib_dir,
-                            'NSL_PARAMS_FILE': params_file},
+                            'NSL_PARAMS_FILE': params_file,
+                            'NSL_FRAME_ID': frame_id},
             remappings=[
                 ('roboscanImage',         LaunchConfiguration('rgb_topic').perform(context)),
                 ('roboscanDistance',      LaunchConfiguration('depth_topic').perform(context)),
+                ('roboscanAmpl',          LaunchConfiguration('ampl_topic').perform(context)),
+                ('roboscanGray',          LaunchConfiguration('gray_topic').perform(context)),
                 ('roboscanPointCloud',    LaunchConfiguration('point_cloud_topic').perform(context)),
                 ('roboscanPointCloudRgb', LaunchConfiguration('point_cloud_rgb_topic').perform(context)),
             ])]
@@ -153,11 +169,14 @@ def generate_launch_description():
         # frames to the global /tf), so it needs the absolute point-cloud topic.
         if _is_true(context, 'use_extrinsic_tf'):
             lidar_topic = _abs_topic(ns, LaunchConfiguration('point_cloud_topic').perform(context))
-            actions.append(ExecuteProcess(
-                cmd=['python3', extrinsic_tf_script,
-                     '--calib-dir', calib_dir,
-                     '--lidar-topic', lidar_topic],
-                output='screen'))
+            cmd = ['python3', extrinsic_tf_script,
+                   '--calib-dir', calib_dir,
+                   '--lidar-topic', lidar_topic]
+            if serial:
+                cmd += ['--camera-id', serial]
+            if ns:
+                cmd += ['--frame-prefix', ns]
+            actions.append(ExecuteProcess(cmd=cmd, output='screen'))
 
         # rviz2 (config rewritten for the namespace so the bundled view still works)
         if _is_true(context, 'use_rviz'):
@@ -187,11 +206,14 @@ def generate_launch_description():
             description='true → shared calibration sensor profile (board-tuned); '
                         'false → per-camera profile (calib_output/{id}/params.yaml), '
                         'falling back to the general default'),
-        # ── Topic remap targets (relative → nest under namespace; no namespace → /<topic>) ──
-        DeclareLaunchArgument('rgb_topic',             default_value='rgb/image_raw'),
-        DeclareLaunchArgument('depth_topic',           default_value='depth/image_raw'),
-        DeclareLaunchArgument('point_cloud_topic',     default_value='point_cloud'),
-        DeclareLaunchArgument('point_cloud_rgb_topic', default_value='point_cloud_rgb'),
+        # ── Topic remap targets (relative, nested under namespace)
+        # With namespace=cam_59 these become /cam_59/camera/rgb/image_raw etc. ──
+        DeclareLaunchArgument('rgb_topic',             default_value='camera/rgb/image_raw'),
+        DeclareLaunchArgument('depth_topic',           default_value='camera/depth/image_raw'),
+        DeclareLaunchArgument('ampl_topic',            default_value='camera/ampl'),
+        DeclareLaunchArgument('gray_topic',            default_value='camera/gray'),
+        DeclareLaunchArgument('point_cloud_topic',     default_value='camera/point_cloud'),
+        DeclareLaunchArgument('point_cloud_rgb_topic', default_value='camera/point_cloud_rgb'),
         # ── Driver node + extrinsic TF + rviz (namespace & profile resolved at launch) ──
         OpaqueFunction(function=_fleet_setup),
         # ── rqt parameter reconfigure (delayed to let the node spin first) ──────
