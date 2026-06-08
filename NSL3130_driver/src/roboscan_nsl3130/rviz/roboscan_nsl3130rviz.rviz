@@ -57,18 +57,15 @@ Visualization Manager:
           Value: true
         N00A5060D_lidar_frame:
           Value: true
-        reference_lidar_frame:
-          Value: false
       Marker Scale: 1
       Name: TF
       Show Arrows: true
       Show Axes: true
       Show Names: true
       Tree:
-        reference_lidar_frame:
-          N00A5060D_lidar_frame:
-            N00A5060D_camera_frame:
-              {}
+        N00A5060D_lidar_frame:
+          N00A5060D_camera_frame:
+            {}
       Update Interval: 0
       Value: true
     - Class: rviz_common/Group
@@ -192,7 +189,7 @@ Visualization Manager:
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
-    Fixed Frame: reference_lidar_frame
+    Fixed Frame: N00A5060D_lidar_frame
     Frame Rate: 30
   Name: root
   Tools:

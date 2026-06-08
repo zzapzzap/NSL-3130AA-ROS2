@@ -134,6 +134,8 @@ install(PROGRAMS
   scripts/intrinsic_calibration_node.py
   scripts/extrinsic_calibration_node.py
   scripts/extrinsic_tf_node.py
+  scripts/multiview_calib_node.py
+  scripts/multiview_tf_node.py
   scripts/verify_intrinsic.py
   DESTINATION lib/${PROJECT_NAME}
 )

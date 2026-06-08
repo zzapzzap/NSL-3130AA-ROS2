@@ -545,65 +545,6 @@ std::string roboscanPublisher::detectUsbSerial()
     return "";
 }
 
-void roboscanPublisher::publishWorldTf()
-{
-    geometry_msgs::msg::TransformStamped ts;
-    ts.header.stamp    = this->get_clock()->now();
-    ts.header.frame_id = "reference_lidar_frame";
-    ts.child_frame_id  = viewerParam.frame_id;
-
-    if (viewerParam.is_reference) {
-        // Reference camera: identity transform (this camera IS the origin)
-        ts.transform.rotation.w = 1.0;
-        tf_static_broadcaster_->sendTransform(ts);
-        RCLCPP_INFO(get_logger(),
-            "[TF] is_reference=true: reference_lidar_frame → %s (identity)",
-            viewerParam.frame_id.c_str());
-    } else {
-        // Non-reference camera: load R|t from {camera_id}/to_reference.yml
-        const char* env = std::getenv("NSL_CALIB_DIR");
-        const std::string dir = env
-            ? std::string(env) + "/"
-            : std::filesystem::current_path().string() + "/calib_output/";
-        const std::string yml = dir + viewerParam.camera_id + "/to_reference.yml";
-
-        cv::FileStorage fs(yml, cv::FileStorage::READ);
-        if (!fs.isOpened()) {
-            RCLCPP_WARN(get_logger(),
-                "[Need R|t] %s not found — TF for '%s' not published.\n"
-                "  Create calib_output/%s/to_reference.yml with R|t to register this camera.",
-                yml.c_str(), viewerParam.camera_id.c_str(), viewerParam.camera_id.c_str());
-            return;
-        }
-
-        cv::Mat R, t;
-        fs["R"] >> R;
-        fs["t"] >> t;
-        fs.release();
-        R.convertTo(R, CV_64F);
-        t.convertTo(t, CV_64F);
-
-        tf2::Matrix3x3 mat(
-            R.at<double>(0,0), R.at<double>(0,1), R.at<double>(0,2),
-            R.at<double>(1,0), R.at<double>(1,1), R.at<double>(1,2),
-            R.at<double>(2,0), R.at<double>(2,1), R.at<double>(2,2));
-        tf2::Quaternion q;
-        mat.getRotation(q);
-
-        ts.transform.rotation.x = q.x();
-        ts.transform.rotation.y = q.y();
-        ts.transform.rotation.z = q.z();
-        ts.transform.rotation.w = q.w();
-        ts.transform.translation.x = t.at<double>(0);
-        ts.transform.translation.y = t.at<double>(1);
-        ts.transform.translation.z = t.at<double>(2);
-        tf_static_broadcaster_->sendTransform(ts);
-        RCLCPP_INFO(get_logger(),
-            "[TF] reference_lidar_frame → %s (from %s)",
-            viewerParam.frame_id.c_str(), yml.c_str());
-    }
-}
-
 void roboscanPublisher::tryLoadCalibParams()
 {
     // Use NSL_CALIB_DIR env var if set, otherwise calib_output/ relative to CWD (repo root)
@@ -943,9 +884,6 @@ void roboscanPublisher::initialise()
 		if (env_frame && env_frame[0] != '\0')
 			viewerParam.frame_id = env_frame;
 	}
-
-	tf_static_broadcaster_ = std::make_shared<tf2_ros::StaticTransformBroadcaster>(this);
-	publishWorldTf();
 
 	tryLoadCalibParams();
 	setWinName();

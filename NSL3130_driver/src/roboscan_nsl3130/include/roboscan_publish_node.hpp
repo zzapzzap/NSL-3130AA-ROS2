@@ -69,7 +69,6 @@ namespace nanosys {
 		std::string	gwAddr;
 		std::string	usbPath;
 		std::string camera_id;   // matches calib_output/{ID}/intrinsic.yml /extrinsic.yml
-		bool        is_reference = true;  // true → reference_lidar_frame; false → load {ID}_to_reference.yml
     };
 
 
@@ -217,9 +216,8 @@ namespace nanosys {
 				viewerParam.lensType = (itLens != lensStrMap.end()) ? itLens->second : 1; // defeault LENS_SF
 
 				viewerParam.lidarAngle   = config["LidarAngle"]   ? config["LidarAngle"].as<double>()   : 0;
-				viewerParam.is_reference = config["IsReference"] ? config["IsReference"].as<bool>()    : true;
 
-				RCLCPP_INFO(this->get_logger(),"Loaded params: ip=%s, max=%d, edge=%d, imgType=%d, lensType=%d, angle=%.2f, is_reference=%d\n", viewerParam.ipAddr.c_str(), viewerParam.maxDistance, viewerParam.pointCloudEdgeThreshold, viewerParam.imageType, viewerParam.lensType, viewerParam.lidarAngle, (int)viewerParam.is_reference);
+				RCLCPP_INFO(this->get_logger(),"Loaded params: ip=%s, max=%d, edge=%d, imgType=%d, lensType=%d, angle=%.2f\n", viewerParam.ipAddr.c_str(), viewerParam.maxDistance, viewerParam.pointCloudEdgeThreshold, viewerParam.imageType, viewerParam.lensType, viewerParam.lidarAngle);
 			}
 			else{
 				RCLCPP_INFO(this->get_logger(),"Params file not found, using defaults: ip=%s\n", viewerParam.ipAddr.c_str());
@@ -323,7 +321,6 @@ namespace nanosys {
 			fout << "ImageType: " << this->get_parameter("C. imageType").as_string() << "\n";
 			fout << "LensType: " << this->get_parameter("B. lensType").as_string() << "\n";
 	        fout << "LidarAngle: "   << this->get_parameter("P. transformAngle").as_double() << "\n";
-	        fout << "IsReference: " << (viewerParam.is_reference ? "true" : "false") << "\n";
 	        fout << "HDRMode: " << this->get_parameter("D. hdr_mode").as_string() << "\n";
 	        fout << "IntegrationTime3D: " << this->get_parameter("E. int0").as_int() << "\n";
 	        fout << "IntegrationTimeHdr1: " << this->get_parameter("F. int1").as_int() << "\n";
@@ -364,13 +361,11 @@ namespace nanosys {
 		bool parameters_ready_ = false;
 		std::string detectUsbSerial();
 		void tryLoadCalibParams();
-		void publishWorldTf();
 		void publishCalibratedRgbCloud(NslPCD* frame, NslOption::NslVec3b* rgbframe,
 		                               const rclcpp::Time& stamp);
 		int mouseXpos, mouseYpos;
 		bool reconfigure;
 		char winName[100];
-		std::shared_ptr<tf2_ros::StaticTransformBroadcaster> tf_static_broadcaster_;
 	};
 
 

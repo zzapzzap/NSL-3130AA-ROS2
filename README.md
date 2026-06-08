@@ -319,6 +319,47 @@ ros2 run tf2_ros tf2_echo {ns}_lidar_frame {ns}_camera_frame   # 예: cam_58_lid
 
 ---
 
+### 4-3. Multiview (STag) 캘리브레이션 — 카메라 간 공유 기준 프레임
+
+여러 카메라를 **하나의 STag 마커**로 묶어 공통 기준(`stag_marker`)을 세우고, 그 결과로 카메라 간 외부 파라미터를 공유합니다. 각 카메라가 같은 마커의 6-DoF 자세를 저장해 두면, `multi_viewer.launch.py` 가 모든 카메라를 `stag_marker` 아래로 정렬해 한 좌표계에서 보여줍니다.
+
+**필요 조건**: `camera.launch.py` 실행 중 + Intrinsic 완료(`{camera_id}/intrinsic.yml`). Extrinsic(`extrinsic.yml`)이 있으면 포인트클라우드(LiDAR 프레임)까지 마커 기준으로 앵커링되고, 없으면 RGB 카메라 프레임만 앵커링됩니다.
+
+**마커**: STag **HD21**, 한 변 기본 **0.32 m**(검은 사각형 바깥 테두리). 다른 패밀리/크기면 인자로 지정합니다.
+
+```bash
+cd ~/colcon_ws
+# 카메라 자기 머신에서 실행 (USB 시리얼 자동 감지 → 출력 폴더, 토픽은 /cam_{옥텟}/camera/rgb/image_raw)
+ros2 launch roboscan_nsl3130 multiview_calib.launch.py
+ros2 launch roboscan_nsl3130 multiview_calib.launch.py marker_size:=0.32 library_hd:=21
+ros2 launch roboscan_nsl3130 multiview_calib.launch.py marker_id:=7        # 기준 마커 id 고정 (기본 -1 = 최저 id)
+ros2 launch roboscan_nsl3130 multiview_calib.launch.py display:=false      # 헤드리스 자동
+```
+
+**절차**: 마커가 RGB 화면에 보이게 둔 뒤 실행하면 검출·자세추정이 라이브 창에 누적 표시됩니다(검출 + 좌표축). **저장 여부는 직접 결정**합니다 — `min_frames`(기본 5) 이상 모이면 아래 키로 제어:
+
+- **`s`** = 지금까지 모은 뷰를 평균내어 저장하고 종료
+- **`r`** = 모은 것 초기화(마커 위치를 바꿔 다시 조준)
+- **`q`** = 저장 없이 종료
+- 헤드리스(`display:=false`)면 `num_frames`(기본 30) 모이면 자동 저장.
+- **정확도 팁**: 마커를 **1~1.5 m** 로 가까이 두고(멀수록 자세 오차가 커집니다), `marker_size` 는 실측값으로 넣으세요.
+
+**변환 방향**: 저장되는 `R, t` 는 **마커 → RGB 카메라** 자세입니다 → `x_cam = R · x_marker + t`. (카메라의 마커 기준 위치는 그 역, `Rᵀ, −Rᵀ·t`.)
+
+**생성 결과:**
+
+```
+~/colcon_ws/src/NSL-3130AA-ROS2/calib_output/
+  {camera_id}/multiview.yml        # R|t + 메타(프레임 이름, marker_id, size, reproj RMSE)
+  {camera_id}/multiview/           # 검출 디버그 이미지 + summary.txt
+```
+
+> 프레임 이름(`{ns}_lidar_frame` 등)은 **라이브 포인트클라우드의 실제 frame_id** 를 읽어 저장하므로, 캘리브를 어느 머신에서 돌리든 뷰어의 라이브 드라이버와 항상 일치합니다.
+
+> 결과 확인은 6-4의 `multi_viewer.launch.py` 로 합니다(아래).
+
+---
+
 ## 5. 파라미터 설정
 
 초기값 파일(위 3-섹션 표의 우선순위로 선택됨):
@@ -417,6 +458,16 @@ rviz2   # PointCloud2 디스플레이 토픽을 /cam_{옥텟}/camera/point_cloud
 | 포인트클라우드 | `/cam_{옥텟}/camera/point_cloud` |
 | XYZRGB | `/cam_{옥텟}/camera/point_cloud_rgb` |
 | 거리/RGB 이미지 | `/cam_{옥텟}/camera/depth/image_raw` · `/cam_{옥텟}/camera/rgb/image_raw` |
+
+**여러 카메라를 한 좌표계에서 (STag 공유 기준):** 각 카메라에 4-3 multiview 캘리브를 해 두면, 번들된 멀티 뷰어가 모두를 `stag_marker` 아래로 정렬해 보여줍니다.
+
+```bash
+ros2 launch roboscan_nsl3130 multi_viewer.launch.py
+ros2 launch roboscan_nsl3130 multi_viewer.launch.py use_multiview_tf:=false   # 공유 기준 없이 원래대로
+```
+
+- `calib_output/{serial}/multiview.yml` 이 있는 카메라를 모두 **`stag_marker`** 기준 프레임 아래로 앵커링하고, RViz Fixed Frame 을 `stag_marker` 로 설정합니다.
+- `multiview.yml` 이 없거나 `R|t` 를 못 읽는 카메라는 **기각(skip)** 되어 표시되지 않습니다.
 
 ### 6-5. 새 Set(Edge) 추가 체크리스트
 

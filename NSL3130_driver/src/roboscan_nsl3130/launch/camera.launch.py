@@ -29,6 +29,7 @@ def generate_launch_description():
     repo_scripts = os.path.join(ws_root, 'src', 'NSL-3130AA-ROS2', 'NSL3130_driver',
                                 'src', 'roboscan_nsl3130', 'scripts')
     extrinsic_tf_script = os.path.join(repo_scripts, 'extrinsic_tf_node.py')
+    multiview_tf_script = os.path.join(repo_scripts, 'multiview_tf_node.py')
     detect_script       = os.path.join(repo_scripts, 'detect_camera_id.py')
 
     # Sensor-tuning profiles. The driver reads the file in NSL_PARAMS_FILE
@@ -120,13 +121,24 @@ def generate_launch_description():
         return f'/{ns}/{rel}' if ns else f'/{rel}'
 
     def _rviz_config(ns, serial):
-        """Rewrite the bundled rviz config so topics match the live namespace.
-        /camera/rgb/image_raw → /{ns}/camera/rgb/image_raw (or unchanged when ns='')."""
+        """Rewrite the bundled rviz config so topics AND frames match the live
+        namespace. Topics: /camera/... → /{ns}/camera/...  Frames: the driver
+        publishes the cloud in {ns}_lidar_frame (or {serial}_lidar_frame when no
+        namespace), and extrinsic_tf_node hangs {ns}_camera_frame under it. The
+        bundled config's Fixed Frame is one of these, so the view anchors on the
+        live cloud frame (the old reference_lidar_frame bridge was removed)."""
         cam_prefix = f'/{ns}/camera/' if ns else '/camera/'
+        lidar_frame  = (f'{ns}_lidar_frame'  if ns
+                        else (f'{serial}_lidar_frame'  if serial else 'lidar_frame'))
+        camera_frame = (f'{ns}_camera_frame' if ns
+                        else (f'{serial}_camera_frame' if serial else 'camera_frame'))
         try:
             with open(rviz_config) as f:
                 content = f.read()
             content = content.replace('/camera/', cam_prefix)
+            # Frame tokens first (compound), then any remaining bare serial token.
+            content = content.replace('N00A5060D_lidar_frame', lidar_frame)
+            content = content.replace('N00A5060D_camera_frame', camera_frame)
             if serial:
                 content = content.replace('N00A5060D', serial)
             out = os.path.join('/tmp', f'roboscan_{ns or "nons"}.rviz')
@@ -178,6 +190,16 @@ def generate_launch_description():
                 cmd += ['--frame-prefix', ns]
             actions.append(ExecuteProcess(cmd=cmd, output='screen'))
 
+        # STag multiview → TF. Anchors this camera under the shared `stag_marker`
+        # reference frame from calib_output/{serial}/multiview.yml (composed with the
+        # extrinsic for the lidar frame). Same role as multi_viewer.launch.py but
+        # published per-edge; warns and skips if multiview is not calibrated yet.
+        if _is_true(context, 'use_multiview_tf'):
+            cmd = ['python3', multiview_tf_script, '--calib-dir', calib_dir]
+            if serial:
+                cmd += ['--camera-id', serial]
+            actions.append(ExecuteProcess(cmd=cmd, output='screen'))
+
         # rviz2 (config rewritten for the namespace so the bundled view still works)
         if _is_true(context, 'use_rviz'):
             actions.append(Node(
@@ -201,6 +223,10 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'use_extrinsic_tf', default_value='true',
             description='Publish {lidar_frame}→{id}_camera_frame TF from the saved extrinsic'),
+        DeclareLaunchArgument(
+            'use_multiview_tf', default_value='true',
+            description='Publish stag_marker→{lidar_frame} TF from the saved multiview.yml '
+                        '(STag shared reference; warns and skips if not yet calibrated)'),
         DeclareLaunchArgument(
             'calibration', default_value='false',
             description='true → shared calibration sensor profile (board-tuned); '

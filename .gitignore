@@ -35,3 +35,7 @@
 __pycache__/
 *.py[cod]
 *.pyo
+
+# Calibration debug artifacts (keep the .yml results, drop the debug output)
+detect_*.png
+summary.txt

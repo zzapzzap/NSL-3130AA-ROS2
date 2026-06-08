@@ -1,0 +1,30 @@
+%YAML:1.0
+---
+camera_id: N00AD05C1
+image_topic: /cam_57/camera/rgb/image_raw
+namespace: cam_57
+camera_frame: cam_57_camera_frame
+lidar_frame: cam_57_lidar_frame
+reference_frame: stag_marker
+library_hd: 21
+marker_id: 7
+marker_size: 3.2000000000000001e-01
+num_frames: 30
+reproj_rmse_px: 8.7964062061507323e-02
+depth_refined: 1
+depth_delta_m: 2.0528161975916825e-01
+R: !!opencv-matrix
+   rows: 3
+   cols: 3
+   dt: d
+   data: [ -9.6810987459407705e-01, 2.2129250514282242e-01,
+       1.1744316872876924e-01, 8.0005886343391085e-03,
+       4.9585638416231848e-01, -8.6836768529636965e-01,
+       -2.5039820545472030e-01, -8.3973571643290534e-01,
+       -4.8181393218956470e-01 ]
+t: !!opencv-matrix
+   rows: 3
+   cols: 1
+   dt: d
+   data: [ 2.0631389662074567e-01, 5.9559727439735832e-01,
+       3.2732293319195676e+00 ]
