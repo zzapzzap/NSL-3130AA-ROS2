@@ -89,6 +89,18 @@ source install/setup.bash
 
 새 터미널을 열 때마다 `source ~/colcon_ws/install/setup.bash` 를 실행해 주세요.
 
+### 2-1. Python 의존성 (멀티뷰 STag 캘리브용, 머신마다 1회)
+
+[4-3 Multiview (STag) 캘리브레이션](#4-3-multiview-stag-캘리브레이션--카메라-간-공유-기준-프레임)은 마커 검출을 위해 `stag-python` 이 필요합니다. **클론한 모든 머신에서 1회** 설치하세요:
+
+```bash
+cd ~/colcon_ws/src/NSL-3130AA-ROS2
+python3 -m pip install --user -r requirements.txt
+# 또는 최소한:  python3 -m pip install --user stag-python
+```
+
+> `sensor_msgs_py`(depth 보정용 포인트클라우드 파싱)·`cv_bridge` 는 ROS 2 Humble에 포함됩니다. 없으면 `sudo apt install ros-humble-sensor-msgs-py ros-humble-cv-bridge`.
+
 ---
 
 ## 3. 카메라 실행
@@ -323,7 +335,7 @@ ros2 run tf2_ros tf2_echo {ns}_lidar_frame {ns}_camera_frame   # 예: cam_58_lid
 
 여러 카메라를 **하나의 STag 마커**로 묶어 공통 기준(`stag_marker`)을 세우고, 그 결과로 카메라 간 외부 파라미터를 공유합니다. 각 카메라가 같은 마커의 6-DoF 자세를 저장해 두면, `multi_viewer.launch.py` 가 모든 카메라를 `stag_marker` 아래로 정렬해 한 좌표계에서 보여줍니다.
 
-**필요 조건**: `camera.launch.py` 실행 중 + Intrinsic 완료(`{camera_id}/intrinsic.yml`). Extrinsic(`extrinsic.yml`)이 있으면 포인트클라우드(LiDAR 프레임)까지 마커 기준으로 앵커링되고, 없으면 RGB 카메라 프레임만 앵커링됩니다.
+**필요 조건**: `stag-python` 설치([2-1](#2-1-python-의존성-멀티뷰-stag-캘리브용-머신마다-1회)) + `camera.launch.py` 실행 중 + Intrinsic 완료(`{camera_id}/intrinsic.yml`). Extrinsic(`extrinsic.yml`)이 있으면 포인트클라우드(LiDAR 프레임)까지 마커 기준으로 앵커링되고, 없으면 RGB 카메라 프레임만 앵커링됩니다.
 
 **마커**: STag **HD21**, 한 변 기본 **0.32 m**(검은 사각형 바깥 테두리). 다른 패밀리/크기면 인자로 지정합니다.
 

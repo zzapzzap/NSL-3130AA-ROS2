@@ -1,0 +1,14 @@
+# Python dependencies for the STag multiview calibration
+# (multiview_calib.launch.py / multiview_calib_node.py).
+#
+# Install on every machine that runs the multiview calibration:
+#     cd ~/colcon_ws/src/NSL-3130AA-ROS2
+#     python3 -m pip install --user -r requirements.txt
+#
+stag-python>=1.1.1   # STag fiducial marker detection (REQUIRED)
+scipy                # robust rotation averaging (optional; numpy fallback exists)
+#
+# Already provided by ROS 2 Humble (apt-install if missing):
+#     ros-humble-sensor-msgs-py   # point-cloud parsing for LiDAR depth refine
+#     ros-humble-cv-bridge        # ROS image <-> OpenCV conversion
+# numpy / opencv come with the ROS 2 + driver build.
