@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
 Intrinsic calibration launcher — wraps intrinsic_calib.sh.
-Camera serial is auto-detected via USB if camera_id is not provided, and the
-subscribed topics are namespaced with it automatically (matches camera.launch.py's
-default `/{device_id}/camera/...`). Override with namespace:='' or explicit topics.
+camera_id (USB serial) is auto-detected for the intrinsic.yml path / output. The
+subscribed image topic is namespaced by this machine's IP last octet (cam_{octet}),
+matching camera.launch.py → `/cam_{octet}/camera/rgb/image_raw`.
+Override with namespace:='' or an explicit image_topic.
 
 Calibration mode (default):
   ros2 launch roboscan_nsl3130 intrinsic_calib.launch.py
@@ -24,15 +25,30 @@ from launch.actions import DeclareLaunchArgument, ExecuteProcess, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 
 
-def _ns_prefix(context, camera_id):
-    """Topic namespace: 'auto' → detected serial (device_id); '' → none; else verbatim."""
+def _detect_ip_octet():
+    """Last octet of this machine's 192.168.0.x address ('' if none).
+    Mirrors camera.launch.py so the calib namespace matches the running driver."""
+    try:
+        out = subprocess.check_output(
+            ['ip', '-4', 'addr'], text=True, stderr=subprocess.DEVNULL)
+        for line in out.splitlines():
+            m = re.search(r'inet 192\.168\.0\.(\d+)/', line)
+            if m:
+                return m.group(1)
+    except Exception:
+        pass
+    return ''
+
+
+def _ns_prefix(context):
+    """Topic namespace, matching camera.launch.py:
+      'auto' → cam_{ip_octet} (this machine's 192.168.0.x), or '' if none found;
+      '' → no namespace; else used verbatim."""
     raw = LaunchConfiguration('namespace').perform(context).strip().strip('/')
     if raw.lower() != 'auto':
         return raw
-    if camera_id and camera_id != 'nsl':
-        n = re.sub(r'[^A-Za-z0-9_]', '_', camera_id)
-        return ('_' + n) if n[0].isdigit() else n
-    return ''
+    octet = _detect_ip_octet()
+    return f'cam_{octet}' if octet else ''
 
 
 def _topic(value, ns, rel):
@@ -65,9 +81,9 @@ def _launch_setup(context):
             print('[intrinsic_calib] WARNING: Camera not detected. Pass camera_id:=<serial>.')
             camera_id = 'nsl'
 
-    ns = _ns_prefix(context, camera_id)
+    ns = _ns_prefix(context)
     image_topic = _topic(LaunchConfiguration('image_topic').perform(context),
-                         ns, 'rgb/image_raw')
+                         ns, 'camera/rgb/image_raw')
     print(f'[intrinsic_calib] image_topic: {image_topic}')
 
     if debug:
@@ -95,9 +111,9 @@ def generate_launch_description():
         DeclareLaunchArgument('square_size',  default_value='0.04',
             description='Square side length in metres'),
         DeclareLaunchArgument('namespace',    default_value='auto',
-            description="Topic namespace: 'auto'=detected serial (DEFAULT), ''=none (/camera/...), or explicit"),
+            description="Topic namespace: 'auto'=cam_{ip_octet} matching camera.launch.py (DEFAULT), ''=none (/camera/...), or explicit"),
         DeclareLaunchArgument('image_topic',  default_value='auto',
-            description="'auto' → /<namespace>/rgb/image_raw; or an explicit topic"),
+            description="'auto' → /<namespace>/camera/rgb/image_raw; or an explicit topic"),
         DeclareLaunchArgument('camera_id',    default_value='',
             description='Camera serial; auto-detected via USB if empty'),
         DeclareLaunchArgument('debug',        default_value='false',

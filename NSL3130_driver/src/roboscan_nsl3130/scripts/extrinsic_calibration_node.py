@@ -375,22 +375,27 @@ def _save_pair_debug(dataset_path, camera_id, idx, amplitude, img_bgr, amp_pixel
 
     amp_c = cv2.applyColorMap((_amp_to_display(amplitude) * 255).astype(np.uint8),
                               cv2.COLORMAP_TURBO)
-    for i, (u, v) in enumerate(amp_pixels, 1):
-        p = (int(round(u)), int(round(v)))
-        cv2.drawMarker(amp_c, p, (255, 255, 255), cv2.MARKER_STAR, 14, 2)
-        cv2.putText(amp_c, str(i), (p[0] + 4, p[1] - 4),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
-
     rgb = img_bgr.copy()
+
+    # Upscale the (low-res) amplitude to RGB height FIRST, then draw markers at the
+    # same size as RGB. Drawing before the resize magnified the amp stars by `scale`
+    # (~4.5×), burying the board under giant markers.
+    scale = rgb.shape[0] / amp_c.shape[0]
+    amp_r = cv2.resize(amp_c, (int(round(amp_c.shape[1] * scale)), rgb.shape[0]),
+                       interpolation=cv2.INTER_NEAREST)
+
+    for i, (u, v) in enumerate(amp_pixels, 1):
+        p = (int(round(u * scale)), int(round(v * scale)))
+        cv2.drawMarker(amp_r, p, (255, 255, 255), cv2.MARKER_STAR, 22, 2)
+        cv2.putText(amp_r, str(i), (p[0] + 6, p[1] - 6),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2, cv2.LINE_AA)
+
     for i, (x, y) in enumerate(rgb_pts, 1):
         p = (int(round(x)), int(round(y)))
         cv2.drawMarker(rgb, p, (0, 0, 255), cv2.MARKER_STAR, 22, 2)
         cv2.putText(rgb, str(i), (p[0] + 6, p[1] - 6),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2, cv2.LINE_AA)
 
-    scale = rgb.shape[0] / amp_c.shape[0]
-    amp_r = cv2.resize(amp_c, (int(round(amp_c.shape[1] * scale)), rgb.shape[0]),
-                       interpolation=cv2.INTER_NEAREST)
     out = ddir / f'{idx:02d}.png'
     cv2.imwrite(str(out), np.hstack([amp_r, rgb]))
     return out
@@ -893,8 +898,8 @@ class ExtrinsicCalibNode(Node):
         name = p['camera_id']
         dp   = Path(p['dataset_path'])
 
-        c2d = dp / f'2D_corners_{name}.csv'
-        c3d = dp / f'3D_corners_{name}.csv'
+        c2d = dp / '2D_corners.csv'
+        c3d = dp / '3D_corners.csv'
         if not c2d.exists() or not c3d.exists():
             self.get_logger().error('No stored corners. Press [s] first.')
             return False

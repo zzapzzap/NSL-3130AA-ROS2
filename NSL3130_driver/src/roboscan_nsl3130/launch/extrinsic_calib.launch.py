@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
 Extrinsic calibration launcher — wraps extrinsic_calib.sh.
-Camera serial is auto-detected via detect_camera_id.py if camera_id is not provided,
-and the subscribed topics are namespaced with it automatically (matches
-camera.launch.py's default `/{device_id}/camera/...`).
+camera_id (USB serial) is auto-detected via detect_camera_id.py for the intrinsic.yml
+path / output. Subscribed topics are namespaced by this machine's IP last octet
+(cam_{octet}), matching camera.launch.py — so `namespace:=auto` agrees with the
+running driver: `/cam_{octet}/camera/rgb/image_raw`, `/cam_{octet}/camera/point_cloud`, ...
 
 Usage:
   ros2 launch roboscan_nsl3130 extrinsic_calib.launch.py
@@ -25,15 +26,30 @@ from launch.actions import DeclareLaunchArgument, ExecuteProcess, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 
 
-def _ns_prefix(context, camera_id):
-    """Topic namespace: 'auto' → detected serial (device_id); '' → none; else verbatim."""
+def _detect_ip_octet():
+    """Last octet of this machine's 192.168.0.x address ('' if none).
+    Mirrors camera.launch.py so the calib namespace matches the running driver."""
+    try:
+        out = subprocess.check_output(
+            ['ip', '-4', 'addr'], text=True, stderr=subprocess.DEVNULL)
+        for line in out.splitlines():
+            m = re.search(r'inet 192\.168\.0\.(\d+)/', line)
+            if m:
+                return m.group(1)
+    except Exception:
+        pass
+    return ''
+
+
+def _ns_prefix(context):
+    """Topic namespace, matching camera.launch.py:
+      'auto' → cam_{ip_octet} (this machine's 192.168.0.x), or '' if none found;
+      '' → no namespace; else used verbatim."""
     raw = LaunchConfiguration('namespace').perform(context).strip().strip('/')
     if raw.lower() != 'auto':
         return raw
-    if camera_id and camera_id != 'nsl':
-        n = re.sub(r'[^A-Za-z0-9_]', '_', camera_id)
-        return ('_' + n) if n[0].isdigit() else n
-    return ''
+    octet = _detect_ip_octet()
+    return f'cam_{octet}' if octet else ''
 
 
 def _topic(value, ns, rel):
@@ -65,10 +81,10 @@ def _launch_setup(context):
                   ' Pass camera_id:=<serial> to override.'
                   ' extrinsic_calib.sh will fall back to intrinsic.yml.')
 
-    ns = _ns_prefix(context, camera_id)
-    image_topic     = _topic(LaunchConfiguration('image_topic').perform(context),     ns, 'rgb/image_raw')
-    lidar_topic     = _topic(LaunchConfiguration('lidar_topic').perform(context),     ns, 'point_cloud')
-    amplitude_topic = _topic(LaunchConfiguration('amplitude_topic').perform(context), ns, 'roboscanAmpl')
+    ns = _ns_prefix(context)
+    image_topic     = _topic(LaunchConfiguration('image_topic').perform(context),     ns, 'camera/rgb/image_raw')
+    lidar_topic     = _topic(LaunchConfiguration('lidar_topic').perform(context),     ns, 'camera/point_cloud')
+    amplitude_topic = _topic(LaunchConfiguration('amplitude_topic').perform(context), ns, 'camera/ampl')
     print(f'[extrinsic_calib] image={image_topic} lidar={lidar_topic} amplitude={amplitude_topic}')
 
     return [ExecuteProcess(
@@ -83,13 +99,13 @@ def generate_launch_description():
         DeclareLaunchArgument('camera_id',    default_value='',
             description='Camera serial; auto-detected via detect_camera_id.py if empty'),
         DeclareLaunchArgument('namespace',    default_value='auto',
-            description="Topic namespace: 'auto'=detected serial (DEFAULT), ''=none (/camera/...), or explicit"),
+            description="Topic namespace: 'auto'=cam_{ip_octet} matching camera.launch.py (DEFAULT), ''=none (/camera/...), or explicit"),
         DeclareLaunchArgument('image_topic',  default_value='auto',
-            description="'auto' → /<namespace>/rgb/image_raw; or explicit topic"),
+            description="'auto' → /<namespace>/camera/rgb/image_raw; or explicit topic"),
         DeclareLaunchArgument('lidar_topic',  default_value='auto',
-            description="'auto' → /<namespace>/point_cloud; or explicit topic"),
+            description="'auto' → /<namespace>/camera/point_cloud; or explicit topic"),
         DeclareLaunchArgument('amplitude_topic', default_value='auto',
-            description="'auto' → /<namespace>/roboscanAmpl; '' disables assisted picker; or explicit topic"),
+            description="'auto' → /<namespace>/camera/ampl; '' disables assisted picker; or explicit topic"),
         DeclareLaunchArgument('points_per_frame', default_value='5',
             description='Number of RGB/LiDAR marker correspondences stored per frame'),
         OpaqueFunction(function=_launch_setup),
