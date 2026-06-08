@@ -68,20 +68,19 @@ def _setup(context):
                                 'src', 'roboscan_nsl3130', 'scripts')
     tf_script    = os.path.join(repo_scripts, 'multiview_tf_node.py')
 
-    actions = []
+    # Always anchor the view on the shared marker frame. In the normal multi-machine
+    # setup each edge's camera.launch.py publishes its own stag_marker→{ns}_lidar_frame
+    # onto /tf_static, which the viewer receives over DDS — nothing to run here.
+    rviz_config = _rviz_config_with_reference(rviz_config, REFERENCE_FRAME)
 
-    use_tf = _is_true(context, 'use_multiview_tf')
-    rviz_delay = 0.0
-    if use_tf:
+    actions = []
+    # Optional LOCAL scan: only to review this machine's saved calib_output when no
+    # live edge is publishing (offline). Off by default — running it while edges also
+    # publish would duplicate /tf_static (TF_REPEATED_DATA spam).
+    if _is_true(context, 'use_multiview_tf'):
         actions.append(ExecuteProcess(
             cmd=['python3', tf_script, '--calib-dir', calib_dir],
             output='screen'))
-        rviz_config = _rviz_config_with_reference(rviz_config, REFERENCE_FRAME)
-        # Start RViz a few seconds after multiview_tf_node so the shared static
-        # transforms are already on /tf_static before RViz subscribes to clouds.
-        # Otherwise RViz holds early cloud messages waiting for the transform and
-        # logs "Message Filter dropping message ... queue is full" at startup.
-        rviz_delay = 3.0
 
     rviz_node = Node(
         package='rviz2',
@@ -90,8 +89,10 @@ def _setup(context):
         arguments=['-d', rviz_config],
         output='screen',
     )
-    actions.append(TimerAction(period=rviz_delay, actions=[rviz_node])
-                   if rviz_delay else rviz_node)
+    # Start RViz a few seconds late so latched /tf_static (from the edges or the local
+    # scan) is already received before the cloud displays subscribe — otherwise RViz
+    # holds early clouds waiting for the transform ("queue is full" at startup).
+    actions.append(TimerAction(period=3.0, actions=[rviz_node]))
     return actions
 
 
@@ -104,9 +105,10 @@ def generate_launch_description():
             'rviz_config', default_value=rviz_config,
             description='Path to rviz2 config file'),
         DeclareLaunchArgument(
-            'use_multiview_tf', default_value='true',
-            description=f'Publish the shared "{REFERENCE_FRAME}" frame from each '
-                        f'calib_output/{{serial}}/multiview.yml and set it as the '
-                        f'RViz Fixed Frame; cameras with no/unreadable R|t are skipped'),
+            'use_multiview_tf', default_value='false',
+            description='Also run a LOCAL multiview_tf scan of this machine\'s '
+                        'calib_output (offline review when no live edge publishes the '
+                        'stag_marker TFs). Default false: each edge publishes its own '
+                        f'over /tf_static. The RViz Fixed Frame is always "{REFERENCE_FRAME}".'),
         OpaqueFunction(function=_setup),
     ])

@@ -23,7 +23,7 @@ git clone --recurse-submodules https://github.com/zzapzzap/NSL-3130AA-ROS2.git
 ### 1-1. USB 드라이버 & udev 규칙
 
 ```bash
-sudo ~/colcon_ws/src/NSL-3130AA-ROS2/NSL3130_driver/src/roboscan_nsl3130/nsl_lib/script/install_libusb_linux.sh
+sudo bash ~/colcon_ws/src/NSL-3130AA-ROS2/NSL3130_driver/src/roboscan_nsl3130/nsl_lib/script/install_libusb_linux.sh
 ```
 
 설치 후 USB 케이블을 뽑았다 다시 꽂으면 `lsusb`에 `1fc9:0099`가 표시됩니다.
@@ -431,21 +431,23 @@ ros2 launch roboscan_nsl3130 multiview_calib.launch.py display:=false      # 헤
 
 ### 6-2. 머신별 1회 셋업 (Edge·PC·Host 공통)
 
-디스커버리는 **공유 `ROS_DOMAIN_ID` + 멀티캐스트**로 동작합니다. **별도 DDS 프로파일이 필요 없습니다.** 새 머신은 도메인만 맞추면 되고, 따로 손볼 설정이 없습니다.
+디스커버리는 **공유 `ROS_DOMAIN_ID` + 멀티캐스트**로 동작합니다. 다만 이 장비는 **카메라 전용 NIC(192.168.2.x)** 가 따로 있어, FastDDS가 그 인터페이스까지 광고하면 원격 머신이 도달 못 해 **포인트클라우드·TF가 안 흐릅니다**(`node list`엔 보이는데 `topic hz`는 빔). 그래서 DDS를 **머신 간 LAN(192.168.0.x)로 제한**합니다.
 
 ```bash
-# 1) ~/.bashrc 에 1회 추가 (모든 머신 동일)
+# ~/.bashrc 에 추가 (모든 머신 동일)
 echo 'export ROS_DOMAIN_ID=42' >> ~/.bashrc
+# DDS를 192.168.0.x LAN으로 제한 (카메라망 192.168.2.x 광고 차단)
+echo 'source ~/colcon_ws/src/NSL-3130AA-ROS2/setup_dds_interface.bash' >> ~/.bashrc
 source ~/.bashrc
 
-# 2) docker를 안 쓰면 docker0 가 다시 안 뜨도록 비활성화 (1회)
+# docker를 안 쓰면 docker0(172.17.0.1)도 비활성화 (1회)
 sudo systemctl disable --now docker.service docker.socket
 sudo ip link delete docker0 2>/dev/null || true
 ```
 
-> **왜 docker를 끄나요?** 모든 머신의 `docker0`가 똑같이 `172.17.0.1`이라, 켜져 있으면 DDS가 데이터를 그 주소로 보내려다 각자 자기 docker0로 흘려 **“토픽 목록은 보이는데 `echo`가 비는”** 증상이 납니다. docker0만 없으면 멀티캐스트 디스커버리 + 공유메모리(SHM)로 머신 N대까지 그대로 확장됩니다.
+> **왜 DDS 인터페이스를 제한하나요?** FastDDS는 기본적으로 **모든 NIC를 광고**합니다. 카메라 전용 NIC(192.168.2.x)나 docker0(모든 머신이 동일한 `172.17.0.1`)가 끼면, 원격 피어가 **도달 불가능한 주소로 연결을 시도**해 *“`node list`엔 보이는데 `topic hz`/TF는 비는”* 증상이 납니다. `setup_dds_interface.bash` 는 로컬 `192.168.0.x` 주소만 쓰도록 FastDDS 프로파일(`~/.ros/fastdds_nsl.xml`)을 셸마다 자동 생성합니다(머신별 자기 IP 자동 감지). 카메라망(192.168.2.x)은 **드라이버↔센서 SDK 전용**이라 DDS가 쓸 일이 없습니다.
 >
-> docker가 꼭 필요한 머신이면 `docker0`(172.17.0.1)가 떠 있는 동안 디스커버리가 깨질 수 있으니 주의하세요(6-6 참고).
+> 설정 후 모든 ROS 2 프로세스를 재시작하세요. 확인: `echo $FASTRTPS_DEFAULT_PROFILES_FILE` → `~/.ros/fastdds_nsl.xml`.
 
 ### 6-3. Edge 실행 (헤드리스)
 
@@ -471,15 +473,23 @@ rviz2   # PointCloud2 디스플레이 토픽을 /cam_{옥텟}/camera/point_cloud
 | XYZRGB | `/cam_{옥텟}/camera/point_cloud_rgb` |
 | 거리/RGB 이미지 | `/cam_{옥텟}/camera/depth/image_raw` · `/cam_{옥텟}/camera/rgb/image_raw` |
 
-**여러 카메라를 한 좌표계에서 (STag 공유 기준):** 각 카메라에 4-3 multiview 캘리브를 해 두면, 번들된 멀티 뷰어가 모두를 `stag_marker` 아래로 정렬해 보여줍니다.
+**여러 카메라를 한 좌표계에서 (STag 공유 기준):** 각 카메라가 [4-3 multiview 캘리브](#4-3-multiview-stag-캘리브레이션--카메라-간-공유-기준-프레임)를 마치면, **각 Edge의 `camera.launch.py` 가 자기 `stag_marker → {ns}_lidar_frame` TF를 `/tf_static` 으로 발행**합니다(모두 같은 물리 마커를 기준으로 잡으니 독립 캘리브라도 트리가 일관됩니다). `/tf_static`·포인트클라우드는 DDS 토픽이라 **같은 `ROS_DOMAIN_ID`면 자동으로 공유**됩니다(6-2의 DDS 인터페이스 제한 필수). Host에서는 뷰어만 띄우면 됩니다:
 
 ```bash
 ros2 launch roboscan_nsl3130 multi_viewer.launch.py
-ros2 launch roboscan_nsl3130 multi_viewer.launch.py use_multiview_tf:=false   # 공유 기준 없이 원래대로
 ```
 
-- `calib_output/{serial}/multiview.yml` 이 있는 카메라를 모두 **`stag_marker`** 기준 프레임 아래로 앵커링하고, RViz Fixed Frame 을 `stag_marker` 로 설정합니다.
-- `multiview.yml` 이 없거나 `R|t` 를 못 읽는 카메라는 **기각(skip)** 되어 표시되지 않습니다.
+- RViz Fixed Frame 이 항상 **`stag_marker`** 로 고정되고, 도메인의 **모든 Edge가 발행한 TF**를 받아 카메라들을 그 아래로 정렬합니다 — Host에 캘리브 파일이 없어도 됩니다.
+- multiview 캘리브를 마치고 `camera.launch.py` 가 도는 Edge만 표시됩니다(나머지는 자연히 빠짐).
+- *(오프라인)* 라이브 Edge 없이 Host의 로컬 `calib_output` 만으로 보려면 `use_multiview_tf:=true`.
+
+**공유 확인 (Host에서):**
+
+```bash
+ros2 topic echo /tf_static --once                          # stag_marker → cam_XX_lidar_frame 들이 보여야 함
+ros2 run tf2_ros tf2_echo stag_marker cam_56_lidar_frame    # 특정 카메라 변환 확인
+ros2 run tf2_tools view_frames                              # frames.pdf 로 전체 TF 트리 확인
+```
 
 ### 6-5. 새 Set(Edge) 추가 체크리스트
 
@@ -491,7 +501,7 @@ ros2 launch roboscan_nsl3130 multi_viewer.launch.py use_multiview_tf:=false   # 
 
 ### 6-6. 트러블슈팅
 
-- **`topic list`엔 보이는데 `echo`가 빈다** → 멀티 NIC 오염. 거의 항상 `docker0`(모든 머신이 똑같이 `172.17.0.1`)가 원인입니다. `ip -br addr | grep docker0` 로 떴는지 확인하고, 떴으면 6-2처럼 docker를 끄세요. (VPN·두 번째 LAN 등 **호스트마다 같은 IP를 갖는 인터페이스**가 있으면 같은 증상이니 그것도 내리세요.)
+- **`node list`엔 보이는데 `echo`·`hz`가 빈다 (특히 포인트클라우드·TF)** → 멀티 NIC 오염. **카메라 NIC(192.168.2.x)** 나 `docker0`(172.17.0.1) 같은 여분 인터페이스를 FastDDS가 광고해, 원격 피어가 도달 못 하는 주소로 붙으려다 데이터가 안 흐릅니다. 6-2의 `setup_dds_interface.bash` 로 DDS를 192.168.0.x로 제한하세요(`echo $FASTRTPS_DEFAULT_PROFILES_FILE` 로 적용 확인, 후 모든 ROS 프로세스 재시작). `docker0`가 떠 있으면(`ip -br addr`) 함께 내리세요. VPN·두 번째 LAN 등 호스트마다 같은 IP를 갖는 인터페이스도 같은 증상입니다.
 - **다른 Edge 토픽이 아예 안 보인다** → `ROS_DOMAIN_ID` 불일치, 또는 스위치가 멀티캐스트(IGMP)를 막음. 점검: 한쪽 `ros2 multicast receive`, 다른 쪽 `ros2 multicast send`.
 - **토픽이 접두어 없이(`/camera/point_cloud` 등) 겹친다** → 어떤 Edge를 `namespace:=''` 로 띄운 것(기본 `auto` 면 `/cam_{옥텟}/camera/...` 라 안 겹침). 일부러 끈 게 아니면 인자를 빼고 다시 띄우세요.
 

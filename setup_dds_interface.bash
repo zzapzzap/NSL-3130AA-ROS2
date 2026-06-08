@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Restrict FastDDS (the default ROS 2 RMW) to the 192.168.0.x machine-to-machine
+# LAN so it never advertises the camera-only NIC (192.168.2.x). Otherwise remote
+# peers try to reach an unreachable interface and point clouds / TF (/tf_static)
+# stop flowing across machines — `ros2 node list` shows the peer but `topic hz`
+# and TF stay empty.
+#
+# The 192.168.2.x link is host<->ToF-sensor only (used by the driver's nanolib,
+# NOT by DDS), so DDS never needs it.
+#
+# Add ONE line to ~/.bashrc (after you source ROS / the workspace), on EVERY machine:
+#     source ~/colcon_ws/src/NSL-3130AA-ROS2/setup_dds_interface.bash
+#
+# It re-detects the local 192.168.0.x address each shell, so it is identical on
+# every machine. Restart all ROS 2 processes after enabling it.
+
+_nsl_lan_ip="$(ip -4 -o addr show 2>/dev/null | grep -oE '192\.168\.0\.[0-9]+' | head -n1)"
+if [ -n "${_nsl_lan_ip}" ]; then
+    _nsl_dds_xml="${HOME}/.ros/fastdds_nsl.xml"
+    mkdir -p "${HOME}/.ros"
+    cat > "${_nsl_dds_xml}" <<XML
+<?xml version="1.0" encoding="UTF-8" ?>
+<dds xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+    <profiles>
+        <transport_descriptors>
+            <transport_descriptor>
+                <transport_id>nsl_lan</transport_id>
+                <type>UDPv4</type>
+                <interfaceWhiteList>
+                    <address>${_nsl_lan_ip}</address>
+                </interfaceWhiteList>
+            </transport_descriptor>
+        </transport_descriptors>
+        <participant profile_name="nsl_lan_only" is_default_profile="true">
+            <rtps>
+                <userTransports>
+                    <transport_id>nsl_lan</transport_id>
+                </userTransports>
+                <useBuiltinTransports>false</useBuiltinTransports>
+            </rtps>
+        </participant>
+    </profiles>
+</dds>
+XML
+    export FASTRTPS_DEFAULT_PROFILES_FILE="${_nsl_dds_xml}"
+else
+    echo "[nsl-dds] WARNING: no 192.168.0.x address found — DDS interface not restricted." >&2
+fi
+unset _nsl_lan_ip _nsl_dds_xml
