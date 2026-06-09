@@ -167,6 +167,12 @@ def generate_launch_description():
             parameters=params if params else None,
             additional_env={'NSL_CALIB_DIR': calib_dir,
                             'NSL_PARAMS_FILE': params_file,
+                            'NSL_CAMERA_ID': serial,
+                            'NSL_CAMERA_IP': LaunchConfiguration('camera_ip').perform(context),
+                            'NSL_CAMERA_NETMASK': LaunchConfiguration('camera_netmask').perform(context),
+                            'NSL_CAMERA_GATEWAY': LaunchConfiguration('camera_gateway').perform(context),
+                            'NSL_NET_PREFLIGHT': LaunchConfiguration('net_preflight').perform(context),
+                            'NSL_USB_ID': LaunchConfiguration('usb_id').perform(context),
                             'NSL_FRAME_ID': frame_id,
                             'NSL_CONNECTION': LaunchConfiguration('connection').perform(context)},
             remappings=[
@@ -229,11 +235,25 @@ def generate_launch_description():
             description='Publish stag_marker→{lidar_frame} TF from the saved multiview.yml '
                         '(STag shared reference; warns and skips if not yet calibrated)'),
         DeclareLaunchArgument(
-            'connection', default_value='auto',
-            description="Camera data path: 'auto'=USB then Ethernet fallback (DEFAULT); "
-                        "'ethernet'=skip USB, stream over gigabit Ethernet (robust — USB 2.0 "
-                        "wedges the camera on crash); 'usb'=USB only. Needs the camera reachable "
-                        "at its IP for ethernet mode."),
+            'connection', default_value='ethernet',
+            description="'ethernet'=fleet runtime path (DEFAULT, no USB fallback); "
+                        "'auto'=Ethernet then USB IP refresh/fallback for recovery; "
+                        "'usb'=USB only."),
+        DeclareLaunchArgument(
+            'camera_ip', default_value='192.168.2.220',
+            description='Camera IP on the isolated Edge-camera link'),
+        DeclareLaunchArgument(
+            'camera_netmask', default_value='255.255.255.0',
+            description='Camera netmask used only when connection:=auto refreshes IP over USB'),
+        DeclareLaunchArgument(
+            'camera_gateway', default_value='192.168.2.1',
+            description='Camera gateway used only when connection:=auto refreshes IP over USB'),
+        DeclareLaunchArgument(
+            'net_preflight', default_value='true',
+            description='true=check ping reachability before SDK nsl_open(ip) to avoid USB fallback churn'),
+        DeclareLaunchArgument(
+            'usb_id', default_value='',
+            description='Optional USB path or serial for connection:=usb/auto; empty uses detected serial'),
         DeclareLaunchArgument(
             'calibration', default_value='false',
             description='true → shared calibration sensor profile (board-tuned); '

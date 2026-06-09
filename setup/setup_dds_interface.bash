@@ -9,10 +9,12 @@
 # NOT by DDS), so DDS never needs it.
 #
 # Add ONE line to ~/.bashrc (after you source ROS / the workspace), on EVERY machine:
-#     source ~/colcon_ws/src/NSL-3130AA-ROS2/setup_dds_interface.bash
+#     source ~/colcon_ws/src/NSL-3130AA-ROS2/setup/setup_dds_interface.bash
 #
-# It re-detects the local 192.168.0.x address each shell, so it is identical on
-# every machine. Restart all ROS 2 processes after enabling it.
+# It re-detects the local 192.168.0.x address each shell. Camera Edge machines
+# are expected to live in 192.168.0.50-59 (namespace /cam_50 ... /cam_59);
+# Host/viewer machines may use another 192.168.0.x address. Restart all ROS 2
+# processes after enabling it.
 
 _nsl_lan_ip="$(ip -4 -o addr show 2>/dev/null | grep -oE '192\.168\.0\.[0-9]+' | head -n1)"
 if [ -n "${_nsl_lan_ip}" ]; then

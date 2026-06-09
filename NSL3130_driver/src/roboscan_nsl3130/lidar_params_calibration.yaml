@@ -1,7 +1,3 @@
-IP Addr: 192.168.2.220
-Net Mask: 255.255.255.0
-GW Addr: 192.168.2.1
-USB Path: 
 MaxDistance: 12500
 PointColud EDGE: 200
 ImageType: RGB_DISTANCE_AMPLITUDE

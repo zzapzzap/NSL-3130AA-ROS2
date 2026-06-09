@@ -2,10 +2,6 @@
 # Auto-loaded by camera.launch.py when this camera (USB serial) is connected.
 # Tuned for max FOV coverage on this dim device: very low MinAmplitude, filters off.
 # Edit live in rqt_reconfigure — saves back here.
-IP Addr: 192.168.2.220
-Net Mask: 255.255.255.0
-GW Addr: 192.168.2.1
-USB Path:
 MaxDistance: 12500
 PointColud EDGE: 200
 ImageType: RGB_DISTANCE_AMPLITUDE

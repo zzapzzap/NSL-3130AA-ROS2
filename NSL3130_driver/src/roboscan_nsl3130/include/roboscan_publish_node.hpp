@@ -201,10 +201,6 @@ namespace nanosys {
 			if (std::ifstream(yaml_path_))
 			{
 				YAML::Node config = YAML::LoadFile(yaml_path_);
-				viewerParam.ipAddr   = config["IP Addr"]  ? config["IP Addr"].as<std::string>()  : "192.168.2.220";
-				viewerParam.netMask  = config["Net Mask"] ? config["Net Mask"].as<std::string>() : "255.255.255.0";
-				viewerParam.gwAddr   = config["GW Addr"]  ? config["GW Addr"].as<std::string>()  : "192.168.2.1";
-				viewerParam.usbPath  = (config["USB Path"] && !config["USB Path"].IsNull()) ? config["USB Path"].as<std::string>() : "";
 				viewerParam.maxDistance = config["MaxDistance"] ? config["MaxDistance"].as<int>() : 12500;
 				viewerParam.pointCloudEdgeThreshold = config["PointColud EDGE"] ? config["PointColud EDGE"].as<int>() : 200;
 				std::string tmpModeStr = config["ImageType"] ? config["ImageType"].as<std::string>() : "DISTANCE_AMPLITUDE";
@@ -217,11 +213,22 @@ namespace nanosys {
 
 				viewerParam.lidarAngle   = config["LidarAngle"]   ? config["LidarAngle"].as<double>()   : 0;
 
-				RCLCPP_INFO(this->get_logger(),"Loaded params: ip=%s, max=%d, edge=%d, imgType=%d, lensType=%d, angle=%.2f\n", viewerParam.ipAddr.c_str(), viewerParam.maxDistance, viewerParam.pointCloudEdgeThreshold, viewerParam.imageType, viewerParam.lensType, viewerParam.lidarAngle);
+				RCLCPP_INFO(this->get_logger(),"Loaded params: max=%d, edge=%d, imgType=%d, lensType=%d, angle=%.2f\n", viewerParam.maxDistance, viewerParam.pointCloudEdgeThreshold, viewerParam.imageType, viewerParam.lensType, viewerParam.lidarAngle);
 			}
 			else{
-				RCLCPP_INFO(this->get_logger(),"Params file not found, using defaults: ip=%s\n", viewerParam.ipAddr.c_str());
+				RCLCPP_INFO(this->get_logger(),"Params file not found, using sensor defaults\n");
 			}
+
+			const char* env_ip = std::getenv("NSL_CAMERA_IP");
+			const char* env_mask = std::getenv("NSL_CAMERA_NETMASK");
+			const char* env_gw = std::getenv("NSL_CAMERA_GATEWAY");
+			const char* env_usb = std::getenv("NSL_USB_ID");
+			if (env_ip && env_ip[0] != '\0') viewerParam.ipAddr = env_ip;
+			if (env_mask && env_mask[0] != '\0') viewerParam.netMask = env_mask;
+			if (env_gw && env_gw[0] != '\0') viewerParam.gwAddr = env_gw;
+			if (env_usb && env_usb[0] != '\0') viewerParam.usbPath = env_usb;
+			RCLCPP_INFO(this->get_logger(),"Network target: ip=%s mask=%s gw=%s",
+				viewerParam.ipAddr.c_str(), viewerParam.netMask.c_str(), viewerParam.gwAddr.c_str());
 		}
 
 		void load_sensor_tuning_params()
@@ -312,10 +319,6 @@ namespace nanosys {
 	    void save_params()
 	    {
 	        std::ofstream fout(yaml_path_);
-	        fout << "IP Addr: "  << this->get_parameter("0. IP Addr").as_string() << "\n";
-	        fout << "Net Mask: " << viewerParam.netMask << "\n";
-	        fout << "GW Addr: "  << viewerParam.gwAddr  << "\n";
-	        fout << "USB Path: " << viewerParam.usbPath << "\n";
 	        fout << "MaxDistance: " << this->get_parameter("Z. MaxDistance").as_int() << "\n";
 	        fout << "PointColud EDGE: " << this->get_parameter("Y. PointColud EDGE").as_int() << "\n";
 			fout << "ImageType: " << this->get_parameter("C. imageType").as_string() << "\n";
@@ -345,6 +348,8 @@ namespace nanosys {
 	    }
 		
 		void initNslLibrary();
+		std::string resolveUsbOpenId() const;
+		bool cameraNetworkReachable(const std::string &ip, int timeout_ms) const;
 		void setMatrixColor(cv::Mat image, int x, int y, NslOption::NslVec3b color);
 		void timeDelay(int milli);
 		void renewParameter();
@@ -359,6 +364,7 @@ namespace nanosys {
 		OnSetParametersCallbackHandle::SharedPtr callback_handle_;
 		rcl_interfaces::msg::SetParametersResult parametersCallback( const std::vector<rclcpp::Parameter> &parameters);
 		bool parameters_ready_ = false;
+		bool device_connected_ = false;
 		std::string detectUsbSerial();
 		void tryLoadCalibParams();
 		void publishCalibratedRgbCloud(NslPCD* frame, NslOption::NslVec3b* rgbframe,

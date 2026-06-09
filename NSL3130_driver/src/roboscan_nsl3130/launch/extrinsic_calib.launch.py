@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Extrinsic calibration launcher — wraps extrinsic_calib.sh.
+Extrinsic calibration launcher — wraps setup/extrinsic_calib.sh.
 camera_id (USB serial) is auto-detected via detect_camera_id.py for the intrinsic.yml
 path / output. Subscribed topics are namespaced by this machine's IP last octet
 (cam_{octet}), matching camera.launch.py — so `namespace:=auto` agrees with the
@@ -69,7 +69,8 @@ def _launch_setup(context):
     detect_script = os.path.join(ws_root, 'src', 'NSL-3130AA-ROS2',
                                  'NSL3130_driver', 'src', 'roboscan_nsl3130',
                                  'scripts', 'detect_camera_id.py')
-    sh_path       = os.path.join(ws_root, 'src', 'NSL-3130AA-ROS2', 'extrinsic_calib.sh')
+    sh_path       = os.path.join(ws_root, 'src', 'NSL-3130AA-ROS2',
+                                 'setup', 'extrinsic_calib.sh')
 
     if not camera_id:
         try:
@@ -79,7 +80,7 @@ def _launch_setup(context):
         except subprocess.CalledProcessError:
             print('[extrinsic_calib] WARNING: Camera not detected.'
                   ' Pass camera_id:=<serial> to override.'
-                  ' extrinsic_calib.sh will fall back to intrinsic.yml.')
+                  ' setup/extrinsic_calib.sh will fall back to intrinsic.yml.')
 
     ns = _ns_prefix(context)
     image_topic     = _topic(LaunchConfiguration('image_topic').perform(context),     ns, 'camera/rgb/image_raw')

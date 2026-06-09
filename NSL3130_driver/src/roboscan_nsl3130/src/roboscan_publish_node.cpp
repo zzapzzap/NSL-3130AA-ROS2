@@ -1,10 +1,13 @@
 #include <cstdio>
+#include <cstring>
+#include <algorithm>
 #include <chrono>
 #include <functional>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <string>
+#include <arpa/inet.h>
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/string.hpp"
 #include <sensor_msgs/msg/point_cloud2.hpp>
@@ -107,8 +110,9 @@ roboscanPublisher::roboscanPublisher() :
 	reconfigure = false;
 	mouseXpos = -1;
 	mouseYpos = -1;
-	runThread = true;
-    publisherThread.reset(new boost::thread(boost::bind(&roboscanPublisher::threadCallback, this)));
+	runThread = false;
+	nsl_handle = -1;
+	device_connected_ = false;
 
 
     RCLCPP_INFO(this->get_logger(), "\nRun rqt to view the image!\n");
@@ -117,11 +121,40 @@ roboscanPublisher::roboscanPublisher() :
 roboscanPublisher::~roboscanPublisher()
 {
 	runThread = false;
-	publisherThread->join();
+	if (publisherThread) {
+		publisherThread->join();
+	}
 
+	if (nsl_handle >= 0) {
+		nsl_streamingOff(nsl_handle);
+		nsl_closeHandle(nsl_handle);
+		nsl_handle = -1;
+	}
 	nsl_close();
 
     RCLCPP_INFO(this->get_logger(), "\nEnd roboscanPublisher()!\n");
+}
+
+std::string roboscanPublisher::resolveUsbOpenId() const
+{
+	if (!viewerParam.usbPath.empty()) {
+		return viewerParam.usbPath;
+	}
+	if (!viewerParam.camera_id.empty() && viewerParam.camera_id != "nsl") {
+		return viewerParam.camera_id;
+	}
+	return "";
+}
+
+bool roboscanPublisher::cameraNetworkReachable(const std::string &ip, int timeout_ms) const
+{
+	in_addr addr{};
+	if (inet_pton(AF_INET, ip.c_str(), &addr) != 1) {
+		return false;
+	}
+	const int timeout_sec = std::max(1, timeout_ms / 1000);
+	const std::string cmd = "ping -c 1 -W " + std::to_string(timeout_sec) + " " + ip + " >/dev/null 2>&1";
+	return std::system(cmd.c_str()) == 0;
 }
 
 void roboscanPublisher::initNslLibrary()
@@ -129,53 +162,102 @@ void roboscanPublisher::initNslLibrary()
 	nslConfig.lidarAngle = viewerParam.lidarAngle;
 	nslConfig.lensType = static_cast<NslOption::LENS_TYPE>(viewerParam.lensType);
 
-	// Connection mode (NSL_CONNECTION env, set by camera.launch.py 'connection' arg):
-	//   auto (default) → try USB first, fall back to Ethernet
-	//   ethernet       → skip USB, stream over gigabit Ethernet (robust path; USB 2.0
-	//                    streaming saturates the bus and wedges the camera on crash,
-	//                    needing a physical replug — Ethernet reconnects cleanly)
-	//   usb            → USB only
-	const char* conn_env = std::getenv("NSL_CONNECTION");
-	const std::string conn = conn_env ? std::string(conn_env) : "auto";
-
-	nsl_handle = -1;
-	if (conn != "ethernet") {   // auto or usb
-		nsl_handle = nsl_open(viewerParam.usbPath.c_str(), &nslConfig, FUNCTION_OPTIONS::FUNC_ON);
-	}
-
-	if (nsl_handle >= 0) {
-		RCLCPP_INFO(this->get_logger(), "USB(Vendor) connected. Updating camera IP: %s mask: %s gw: %s",
-			viewerParam.ipAddr.c_str(), viewerParam.netMask.c_str(), viewerParam.gwAddr.c_str());
-		nsl_setIpAddress(nsl_handle, viewerParam.ipAddr.c_str(), viewerParam.netMask.c_str(), viewerParam.gwAddr.c_str());
-		nsl_saveConfiguration(nsl_handle);
-		RCLCPP_INFO(this->get_logger(), "Streaming via USB.");
-	} else if (conn == "usb") {
-		RCLCPP_ERROR(this->get_logger(), "connection:=usb but USB open failed (code: %d). "
-			"Replug the camera's USB cable — USB 2.0 streaming wedges the device on crash.", nsl_handle);
-		return;
-	} else {
-		if (conn == "ethernet")
-			RCLCPP_INFO(this->get_logger(), "connection:=ethernet — streaming over Ethernet %s ...",
-				viewerParam.ipAddr.c_str());
-		else
-			RCLCPP_INFO(this->get_logger(), "USB unavailable (code: %d), connecting via Ethernet %s ...",
-				nsl_handle, viewerParam.ipAddr.c_str());
-		nsl_handle = nsl_open(viewerParam.ipAddr.c_str(), &nslConfig, FUNCTION_OPTIONS::FUNC_ON);
-		if( nsl_handle < 0 ){
-			std::cout << "nsl_open::handle open error::" << nsl_handle << std::endl;
-			return;
-		}
-		RCLCPP_INFO(this->get_logger(), "Streaming via Ethernet.");
-	}
-
-	// Camera serial from USB sysfs (VID 1fc9 = NanoSystems) — independent of the data
-	// path, so it also works in Ethernet mode when USB is plugged only for power.
-	if (viewerParam.camera_id.empty() || viewerParam.camera_id == "nsl") {
+	const char* env_camera_id = std::getenv("NSL_CAMERA_ID");
+	if (env_camera_id && env_camera_id[0] != '\0') {
+		viewerParam.camera_id = env_camera_id;
+	} else if (viewerParam.camera_id.empty() || viewerParam.camera_id == "nsl") {
 		std::string ser = detectUsbSerial();
 		if (!ser.empty()) {
 			viewerParam.camera_id = ser;
 			RCLCPP_INFO(this->get_logger(), "Camera ID auto-detected: %s", ser.c_str());
 		}
+	}
+
+	// Connection mode (NSL_CONNECTION env, set by camera.launch.py 'connection' arg):
+	//   ethernet (default) → Ethernet only (fleet path; never touches USB data path)
+	//   auto               → Ethernet first, then USB IP refresh/fallback
+	//   usb            → USB only
+	const char* conn_env = std::getenv("NSL_CONNECTION");
+	const std::string conn = conn_env ? std::string(conn_env) : "ethernet";
+	const std::string usb_id = resolveUsbOpenId();
+	const char* preflight_env = std::getenv("NSL_NET_PREFLIGHT");
+	const bool net_preflight = !(preflight_env && std::string(preflight_env) == "false");
+
+	nsl_handle = -1;
+	bool opened_usb = false;
+
+	if (conn != "usb") {
+		if (net_preflight && !cameraNetworkReachable(viewerParam.ipAddr, 1000)) {
+			RCLCPP_ERROR(this->get_logger(),
+				"Camera network preflight failed at %s. Skipping SDK nsl_open() to avoid USB fallback churn. "
+				"Power-cycle/replug the camera or run change_camera_ip, then check ping again.",
+				viewerParam.ipAddr.c_str());
+			if (conn == "ethernet") {
+				return;
+			}
+		}
+	}
+
+	if (conn != "usb" && (!net_preflight || cameraNetworkReachable(viewerParam.ipAddr, 1000))) {
+		RCLCPP_INFO(this->get_logger(), "Opening camera over Ethernet %s ...",
+			viewerParam.ipAddr.c_str());
+		nsl_handle = nsl_open(viewerParam.ipAddr.c_str(), &nslConfig, FUNCTION_OPTIONS::FUNC_ON);
+		if (nsl_handle >= 0) {
+			RCLCPP_INFO(this->get_logger(), "Streaming via Ethernet.");
+		} else if (conn == "ethernet") {
+			RCLCPP_ERROR(this->get_logger(),
+				"connection:=ethernet but Ethernet open failed (code: %d) at %s. "
+				"Check camera power/Ethernet link and that the camera IP was set by change_camera_ip.",
+				nsl_handle, viewerParam.ipAddr.c_str());
+			return;
+		}
+	}
+
+	if (nsl_handle < 0 && conn == "auto") {
+		RCLCPP_INFO(this->get_logger(), "Ethernet unavailable (code: %d). Trying USB id='%s' ...",
+			nsl_handle, usb_id.c_str());
+		nsl_handle = nsl_open(usb_id.c_str(), &nslConfig, FUNCTION_OPTIONS::FUNC_ON);
+		opened_usb = (nsl_handle >= 0);
+	}
+
+	if (nsl_handle < 0 && conn == "usb") {
+		RCLCPP_INFO(this->get_logger(), "connection:=usb — opening USB id='%s' ...", usb_id.c_str());
+		nsl_handle = nsl_open(usb_id.c_str(), &nslConfig, FUNCTION_OPTIONS::FUNC_ON);
+		opened_usb = (nsl_handle >= 0);
+	}
+
+	if (nsl_handle >= 0 && opened_usb && conn != "usb") {
+		RCLCPP_INFO(this->get_logger(), "USB connected. Updating camera IP: %s mask: %s gw: %s",
+			viewerParam.ipAddr.c_str(), viewerParam.netMask.c_str(), viewerParam.gwAddr.c_str());
+		nsl_setIpAddress(nsl_handle, viewerParam.ipAddr.c_str(), viewerParam.netMask.c_str(), viewerParam.gwAddr.c_str());
+		nsl_saveConfiguration(nsl_handle);
+		nsl_closeHandle(nsl_handle);
+		nsl_handle = -1;
+
+		if (!net_preflight || cameraNetworkReachable(viewerParam.ipAddr, 2000)) {
+			RCLCPP_INFO(this->get_logger(), "Retrying Ethernet after USB IP update ...");
+			nsl_handle = nsl_open(viewerParam.ipAddr.c_str(), &nslConfig, FUNCTION_OPTIONS::FUNC_ON);
+			if (nsl_handle >= 0) {
+				RCLCPP_INFO(this->get_logger(), "Streaming via Ethernet.");
+			}
+		} else {
+			RCLCPP_WARN(this->get_logger(),
+				"Ethernet still not reachable after USB IP update; falling back to USB streaming for this run. "
+				"Power-cycle the camera after change_camera_ip for stable fleet use.");
+			nsl_handle = nsl_open(usb_id.c_str(), &nslConfig, FUNCTION_OPTIONS::FUNC_ON);
+		}
+	}
+
+	if (nsl_handle < 0) {
+		RCLCPP_ERROR(this->get_logger(),
+			"NSL camera open failed (code: %d). Detected USB serial='%s', USB id used='%s', target IP=%s. "
+			"If lsusb shows 1fc9:0099 but this persists, power-cycle/replug the camera and rerun change_camera_ip.",
+			nsl_handle, viewerParam.camera_id.c_str(), usb_id.c_str(), viewerParam.ipAddr.c_str());
+		return;
+	}
+
+	if (conn == "usb") {
+		RCLCPP_INFO(this->get_logger(), "Streaming via USB.");
 	}
 
 	load_sensor_tuning_params();
@@ -191,6 +273,7 @@ void roboscanPublisher::initNslLibrary()
 	nsl_setRoi(nsl_handle, nslConfig.roiXMin, nslConfig.roiYMin, nslConfig.roiXMax, nslConfig.roiYMax);
 	nsl_setGrayscaleillumination(nsl_handle, nslConfig.grayscaleIlluminationOpt);
 
+	device_connected_ = true;
 	startStreaming();
 }
 
@@ -200,6 +283,10 @@ void roboscanPublisher::threadCallback()
 	int frameCount = 0;
 
 	while(runThread){
+		if (!device_connected_ || nsl_handle < 0) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(100));
+			continue;
+		}
 
 		if( reconfigure ){
 			reconfigure = false;
@@ -493,37 +580,6 @@ rcl_interfaces::msg::SetParametersResult roboscanPublisher::parametersCallback( 
 				viewerParam.saveParam = true;
 			}
 		}
-		else if (param.get_name() == "0. IP Addr")
-		{
-			string tmpIp = param.as_string();
-			if( tmpIp != viewerParam.ipAddr ) {
-				RCLCPP_INFO(this->get_logger(), "changed IP addr %s -> %s\n", viewerParam.ipAddr.c_str(), tmpIp.c_str());
-
-				viewerParam.saveParam = true;
-				viewerParam.reOpenLidar = true;
-				viewerParam.ipAddr = tmpIp;
-			}
-		}
-		else if (param.get_name() == "1. Net Mask")
-		{
-			string tmpIp = param.as_string();
-			if( tmpIp != viewerParam.netMask ) {
-				RCLCPP_INFO(this->get_logger(), "changed Netmask addr %s -> %s\n", viewerParam.netMask.c_str(), tmpIp.c_str());
-				viewerParam.saveParam = true;
-				viewerParam.reOpenLidar = true;
-				viewerParam.netMask= tmpIp;
-			}
-		}
-		else if (param.get_name() == "2. GW Addr")
-		{
-			string tmpIp = param.as_string();
-			if( tmpIp != viewerParam.gwAddr ) {
-				RCLCPP_INFO(this->get_logger(), "changed Gw addr %s -> %s\n", viewerParam.gwAddr.c_str(), tmpIp.c_str());
-				viewerParam.saveParam = true;
-				viewerParam.reOpenLidar = true;
-				viewerParam.gwAddr= tmpIp;
-			}
-		}
 	}
 
 	reconfigure = true;
@@ -717,7 +773,6 @@ void roboscanPublisher::publishCalibratedRgbCloud(
 
 void roboscanPublisher::renewParameter()
 {
-	this->set_parameter(rclcpp::Parameter("0. IP Addr", viewerParam.ipAddr));
 	this->set_parameter(rclcpp::Parameter("B. lensType", lensIntMap.at(viewerParam.lensType)));
 	this->set_parameter(rclcpp::Parameter("C. imageType", modeIntMap.at(viewerParam.imageType)));
 	this->set_parameter(rclcpp::Parameter("D. hdr_mode", hdrIntMap.at(static_cast<int>(nslConfig.hdrOpt))));
@@ -759,21 +814,34 @@ void roboscanPublisher::setReconfigure()
 		save_params();
 	}
 
+	if (!device_connected_ || nsl_handle < 0) {
+		RCLCPP_WARN(this->get_logger(), "Skipping reconfigure: NSL camera is not connected.");
+		setWinName();
+		return;
+	}
+
 	if( !viewerParam.changedCvShow )
 	{
 		nsl_streamingOff(nsl_handle);
 		
 		std::cout << " nsl_handle = "<< nsl_handle << "nsl_open :: reOpenLidar = "<< viewerParam.reOpenLidar << std::endl;
 		
-		if( nsl_handle < 0 && viewerParam.reOpenLidar ){
-
-			nslConfig.lidarAngle = viewerParam.lidarAngle;
-			nslConfig.lensType = static_cast<NslOption::LENS_TYPE>(viewerParam.lensType);
-			nsl_handle = nsl_open(viewerParam.ipAddr.c_str(), &nslConfig, FUNCTION_OPTIONS::FUNC_ON);
+		if( viewerParam.reOpenLidar ){
+			if (nsl_handle >= 0) {
+				nsl_closeHandle(nsl_handle);
+			}
+			nsl_handle = -1;
+			device_connected_ = false;
 			viewerParam.reOpenLidar = false;
+			initNslLibrary();
 
 			if( nsl_handle >= 0 ){
+				device_connected_ = true;
 				renewParameter();
+			} else {
+				device_connected_ = false;
+				RCLCPP_ERROR(this->get_logger(), "Reopen failed; streaming remains stopped.");
+				return;
 			}
 		}
 		
@@ -876,6 +944,7 @@ void roboscanPublisher::initialise()
 {
 	std::cout << "Init roboscan_nsl3130 node\n"<< std::endl;
 
+	std::memset(&nslConfig, 0, sizeof(nslConfig));
 	viewerParam.saveParam = false;
 	viewerParam.frameCount = 0;
 	viewerParam.cvShow = false;
@@ -909,10 +978,6 @@ void roboscanPublisher::initialise()
 
 	tryLoadCalibParams();
 	setWinName();
-
-	rclcpp::Parameter pIPAddr("0. IP Addr", viewerParam.ipAddr);
-//	rclcpp::Parameter pNetMask("1. Net Mask", viewerParam.netMask);
-//	rclcpp::Parameter pGWAddr("2. GW Addr", viewerParam.gwAddr);
 
 	rclcpp::Parameter pCvShow("A. cvShow", viewerParam.cvShow);
 	rclcpp::Parameter pLensType("B. lensType", lensIntMap.at(viewerParam.lensType));
@@ -948,9 +1013,6 @@ void roboscanPublisher::initialise()
 	rclcpp::Parameter pPCEdgeFilter("Y. PointColud EDGE", viewerParam.pointCloudEdgeThreshold);
 	rclcpp::Parameter pMaxDistance("Z. MaxDistance", viewerParam.maxDistance);
 
-	this->declare_parameter<string>("0. IP Addr", viewerParam.ipAddr);
-//	this->declare_parameter<string>("1. Net Mask", viewerParam.netMask);
-//	this->declare_parameter<string>("2. GW Addr", viewerParam.gwAddr);
 	this->declare_parameter<bool>("A. cvShow", viewerParam.cvShow);
 	this->declare_parameter<string>("B. lensType", lensIntMap.at(viewerParam.lensType));
 	this->declare_parameter<string>("C. imageType", modeIntMap.at(viewerParam.imageType));
@@ -1021,9 +1083,6 @@ void roboscanPublisher::initialise()
 
 
 	this->set_parameter(pFrameID);
-	this->set_parameter(pIPAddr);
-//	this->set_parameter(pNetMask);
-//	this->set_parameter(pGWAddr);
 
 	this->set_parameter(pLensType);
 	this->set_parameter(pImageType);
@@ -1060,6 +1119,10 @@ void roboscanPublisher::initialise()
 	viewerParam.saveParam = false;
 	reconfigure = false;
 	parameters_ready_ = true;
+	if (device_connected_ && !publisherThread) {
+		runThread = true;
+		publisherThread.reset(new boost::thread(boost::bind(&roboscanPublisher::threadCallback, this)));
+	}
 	
 	RCLCPP_INFO(this->get_logger(),"end initialise()\n");
 }
@@ -1067,6 +1130,11 @@ void roboscanPublisher::initialise()
 
 void roboscanPublisher::startStreaming()
 {	
+	if (nsl_handle < 0) {
+		RCLCPP_WARN(this->get_logger(), "startStreaming skipped: invalid NSL handle.");
+		return;
+	}
+
 	if( viewerParam.imageType == static_cast<int>(OPERATION_MODE_OPTIONS::DISTANCE_MODE)){
 		nsl_streamingOn(nsl_handle, OPERATION_MODE_OPTIONS::DISTANCE_MODE);
 	}
