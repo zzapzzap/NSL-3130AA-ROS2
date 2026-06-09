@@ -167,7 +167,8 @@ def generate_launch_description():
             parameters=params if params else None,
             additional_env={'NSL_CALIB_DIR': calib_dir,
                             'NSL_PARAMS_FILE': params_file,
-                            'NSL_FRAME_ID': frame_id},
+                            'NSL_FRAME_ID': frame_id,
+                            'NSL_CONNECTION': LaunchConfiguration('connection').perform(context)},
             remappings=[
                 ('roboscanImage',         LaunchConfiguration('rgb_topic').perform(context)),
                 ('roboscanDistance',      LaunchConfiguration('depth_topic').perform(context)),
@@ -227,6 +228,12 @@ def generate_launch_description():
             'use_multiview_tf', default_value='true',
             description='Publish stag_marker→{lidar_frame} TF from the saved multiview.yml '
                         '(STag shared reference; warns and skips if not yet calibrated)'),
+        DeclareLaunchArgument(
+            'connection', default_value='auto',
+            description="Camera data path: 'auto'=USB then Ethernet fallback (DEFAULT); "
+                        "'ethernet'=skip USB, stream over gigabit Ethernet (robust — USB 2.0 "
+                        "wedges the camera on crash); 'usb'=USB only. Needs the camera reachable "
+                        "at its IP for ethernet mode."),
         DeclareLaunchArgument(
             'calibration', default_value='false',
             description='true → shared calibration sensor profile (board-tuned); '

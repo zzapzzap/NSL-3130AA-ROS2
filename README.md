@@ -342,10 +342,10 @@ ros2 run tf2_ros tf2_echo {ns}_lidar_frame {ns}_camera_frame   # 예: cam_58_lid
 ```bash
 cd ~/colcon_ws
 # 카메라 자기 머신에서 실행 (USB 시리얼 자동 감지 → 출력 폴더, 토픽은 /cam_{옥텟}/camera/rgb/image_raw)
-ros2 launch roboscan_nsl3130 multiview_calib.launch.py
-ros2 launch roboscan_nsl3130 multiview_calib.launch.py marker_size:=0.32 library_hd:=21
-ros2 launch roboscan_nsl3130 multiview_calib.launch.py marker_id:=7        # 기준 마커 id 고정 (기본 -1 = 최저 id)
-ros2 launch roboscan_nsl3130 multiview_calib.launch.py display:=false      # 헤드리스 자동
+ros2 launch roboscan_nsl3130 multiview.launch.py calibration:=True
+ros2 launch roboscan_nsl3130 multiview.launch.py calibration:=True library_hd:=21
+ros2 launch roboscan_nsl3130 multiview.launch.py calibration:=True        # 기준 마커 id 고정 (기본 -1 = 최저 id)
+ros2 launch roboscan_nsl3130 multiview.launch.py calibration:=True display:=false      # 헤드리스 자동
 ```
 
 **절차**: 마커가 RGB 화면에 보이게 둔 뒤 실행하면 검출·자세추정이 라이브 창에 누적 표시됩니다(검출 + 좌표축). **저장 여부는 직접 결정**합니다 — `min_frames`(기본 5) 이상 모이면 아래 키로 제어:

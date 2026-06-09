@@ -129,31 +129,53 @@ void roboscanPublisher::initNslLibrary()
 	nslConfig.lidarAngle = viewerParam.lidarAngle;
 	nslConfig.lensType = static_cast<NslOption::LENS_TYPE>(viewerParam.lensType);
 
-	nsl_handle = nsl_open(viewerParam.usbPath.c_str(), &nslConfig, FUNCTION_OPTIONS::FUNC_ON);
+	// Connection mode (NSL_CONNECTION env, set by camera.launch.py 'connection' arg):
+	//   auto (default) → try USB first, fall back to Ethernet
+	//   ethernet       → skip USB, stream over gigabit Ethernet (robust path; USB 2.0
+	//                    streaming saturates the bus and wedges the camera on crash,
+	//                    needing a physical replug — Ethernet reconnects cleanly)
+	//   usb            → USB only
+	const char* conn_env = std::getenv("NSL_CONNECTION");
+	const std::string conn = conn_env ? std::string(conn_env) : "auto";
+
+	nsl_handle = -1;
+	if (conn != "ethernet") {   // auto or usb
+		nsl_handle = nsl_open(viewerParam.usbPath.c_str(), &nslConfig, FUNCTION_OPTIONS::FUNC_ON);
+	}
+
 	if (nsl_handle >= 0) {
 		RCLCPP_INFO(this->get_logger(), "USB(Vendor) connected. Updating camera IP: %s mask: %s gw: %s",
 			viewerParam.ipAddr.c_str(), viewerParam.netMask.c_str(), viewerParam.gwAddr.c_str());
 		nsl_setIpAddress(nsl_handle, viewerParam.ipAddr.c_str(), viewerParam.netMask.c_str(), viewerParam.gwAddr.c_str());
 		nsl_saveConfiguration(nsl_handle);
 		RCLCPP_INFO(this->get_logger(), "Streaming via USB.");
-
-		// Auto-detect camera serial from sysfs (VID 1fc9 = NanoSystems)
-		if (viewerParam.camera_id.empty() || viewerParam.camera_id == "nsl") {
-			std::string ser = detectUsbSerial();
-			if (!ser.empty()) {
-				viewerParam.camera_id = ser;
-				RCLCPP_INFO(this->get_logger(), "Camera ID auto-detected: %s", ser.c_str());
-			}
-		}
+	} else if (conn == "usb") {
+		RCLCPP_ERROR(this->get_logger(), "connection:=usb but USB open failed (code: %d). "
+			"Replug the camera's USB cable — USB 2.0 streaming wedges the device on crash.", nsl_handle);
+		return;
 	} else {
-		RCLCPP_INFO(this->get_logger(), "USB unavailable (code: %d), connecting via Ethernet %s ...",
-			nsl_handle, viewerParam.ipAddr.c_str());
+		if (conn == "ethernet")
+			RCLCPP_INFO(this->get_logger(), "connection:=ethernet — streaming over Ethernet %s ...",
+				viewerParam.ipAddr.c_str());
+		else
+			RCLCPP_INFO(this->get_logger(), "USB unavailable (code: %d), connecting via Ethernet %s ...",
+				nsl_handle, viewerParam.ipAddr.c_str());
 		nsl_handle = nsl_open(viewerParam.ipAddr.c_str(), &nslConfig, FUNCTION_OPTIONS::FUNC_ON);
 		if( nsl_handle < 0 ){
 			std::cout << "nsl_open::handle open error::" << nsl_handle << std::endl;
 			return;
 		}
 		RCLCPP_INFO(this->get_logger(), "Streaming via Ethernet.");
+	}
+
+	// Camera serial from USB sysfs (VID 1fc9 = NanoSystems) — independent of the data
+	// path, so it also works in Ethernet mode when USB is plugged only for power.
+	if (viewerParam.camera_id.empty() || viewerParam.camera_id == "nsl") {
+		std::string ser = detectUsbSerial();
+		if (!ser.empty()) {
+			viewerParam.camera_id = ser;
+			RCLCPP_INFO(this->get_logger(), "Camera ID auto-detected: %s", ser.c_str());
+		}
 	}
 
 	load_sensor_tuning_params();

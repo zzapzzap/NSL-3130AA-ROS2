@@ -167,6 +167,18 @@ def _ransac_offset(s, tol=0.03, iters=200):
     return float(s[best_inl].mean()), best_c
 
 
+# Per-tag physical size — hardcoded on purpose (the user finds a marker_size param
+# confusing): tag id 7 is the big 0.32 m REFERENCE/origin marker; every other id is a
+# 0.19 m auxiliary that just helps share/stabilise the TF tree under tag 7.
+REF_ID = 7
+SIZE_BY_ID = {REF_ID: 0.32}
+AUX_SIZE = 0.19
+
+
+def _size_of(tag_id):
+    return SIZE_BY_ID.get(int(tag_id), AUX_SIZE)
+
+
 # ─────────────────────────────── the node ───────────────────────────────────
 
 class MultiviewCalibNode(Node):
@@ -182,7 +194,6 @@ class MultiviewCalibNode(Node):
         self.out_dir.mkdir(parents=True, exist_ok=True)
 
         self.K, self.D, self.fisheye, (self.w, self.h) = self._load_intrinsics()
-        self.objp = _object_points(args.marker_size)
 
         self.ns = _namespace_from_topic(args.image_topic)
         self.camera_frame = f'{self.ns}_camera_frame' if self.ns else 'camera_frame'
@@ -209,9 +220,8 @@ class MultiviewCalibNode(Node):
         if args.depth_refine and _pc2 is None:
             self.get_logger().warn('sensor_msgs_py unavailable → depth refine disabled.')
 
-        # accumulated good detections
-        self.rvecs, self.tvecs, self.errs = [], [], []
-        self.chosen_id = None
+        # accumulated good detections, per tag id: {id: {'rv':[], 'tv':[], 'err':[]}}
+        self.tags = {}
         self.saved = False
         self.frame_count = 0
         self.last_save_dbg = -1
@@ -219,8 +229,7 @@ class MultiviewCalibNode(Node):
         self.sub = self.create_subscription(Image, args.image_topic, self._cb, 1)
         self.get_logger().info(
             f'[multiview_calib] serial={self.serial}  topic={args.image_topic}\n'
-            f'  HD{args.library_hd}  marker_size={args.marker_size} m  '
-            f'target_id={"any(lowest)" if args.marker_id < 0 else args.marker_id}\n'
+            f'  HD{args.library_hd}  multi-tag (id {REF_ID}=0.32 m REFERENCE, others=0.19 m aux)\n'
             f'  intrinsics: {"fisheye/equidistant" if self.fisheye else "pinhole"}  '
             f'{self.w}x{self.h}\n'
             f'  collecting {args.num_frames} good views → {self.dev_dir/"multiview.yml"}\n'
@@ -275,15 +284,15 @@ class MultiviewCalibNode(Node):
             und = cv2.undistortPoints(pts, self.K, self.D, P=self.K)
         return und.reshape(-1, 2)
 
-    def _pose(self, corners_px: np.ndarray):
-        """corners_px: (4,2) STag corners → (rvec, tvec, rmse_px) or None."""
+    def _pose(self, corners_px, objp):
+        """corners_px: (4,2) STag corners, objp: marker object points → (rvec, tvec, rmse_px)."""
         und = self._undistort(corners_px)
         ok, rvec, tvec = cv2.solvePnP(
-            self.objp, und.astype(np.float64), self.K, None,
+            objp, und.astype(np.float64), self.K, None,
             flags=cv2.SOLVEPNP_IPPE_SQUARE)
         if not ok:
             return None
-        proj, _ = cv2.projectPoints(self.objp, rvec, tvec, self.K, None)
+        proj, _ = cv2.projectPoints(objp, rvec, tvec, self.K, None)
         rmse = float(np.sqrt(np.mean(np.sum((proj.reshape(-1, 2) - und) ** 2, axis=1))))
         return rvec, tvec, rmse
 
@@ -305,33 +314,43 @@ class MultiviewCalibNode(Node):
 
         if ids is not None and len(ids) > 0:
             stag.drawDetectedMarkers(dbg, corners, ids)
-            idx = self._select_marker(ids)
-            if idx is not None:
-                mid = int(np.asarray(ids).reshape(-1)[idx])
-                cpx = np.asarray(corners[idx], np.float64).reshape(4, 2)
-                res = self._pose(cpx)
-                if res is not None:
-                    rvec, tvec, rmse = res
-                    if rmse <= self.a.reproj_thresh:
-                        if self.chosen_id is None:
-                            self.chosen_id = mid
-                        # cap at num_frames: once full, keep streaming/detecting but
-                        # stop accumulating (HUD holds at 30/30 until [s]/[r]/[q]).
-                        if mid == self.chosen_id and len(self.rvecs) < self.a.num_frames:
-                            self.rvecs.append(rvec.reshape(3))
-                            self.tvecs.append(tvec.reshape(3))
-                            self.errs.append(rmse)
-                    cv2.drawFrameAxes(dbg, self.K, None, rvec, tvec,
-                                      self.a.marker_size * 0.5, 3)
-                    self._annotate(dbg, mid, tvec.reshape(3), rmse)
+            for i, mid in enumerate(np.asarray(ids).reshape(-1)):
+                mid = int(mid)
+                size = _size_of(mid)
+                cpx = np.asarray(corners[i], np.float64).reshape(4, 2)
+                res = self._pose(cpx, _object_points(size))
+                if res is None:
+                    continue
+                rvec, tvec, rmse = res
+                if rmse <= self.a.reproj_thresh:
+                    tag = self.tags.setdefault(mid, {'rv': [], 'tv': [], 'err': []})
+                    # cap each tag at num_frames; keep streaming once full
+                    if len(tag['rv']) < self.a.num_frames:
+                        tag['rv'].append(rvec.reshape(3))
+                        tag['tv'].append(tvec.reshape(3))
+                        tag['err'].append(rmse)
+                cv2.drawFrameAxes(dbg, self.K, None, rvec, tvec, size * 0.5, 3)
+            self._annotate(dbg)
 
         self._hud(dbg)
         self._maybe_dump_debug(dbg)
 
         if self.a.display:
             self._show(dbg)          # interactive: user decides with [s]/[r]/[q]
-        elif len(self.rvecs) >= self.a.num_frames:
+        elif self._ref_count() >= self.a.num_frames:
             self._finish('collected enough views (headless auto)')
+
+    def _ref_id(self):
+        """Reference tag id: tag 7 if seen, else the most-collected tag (or None)."""
+        if REF_ID in self.tags:
+            return REF_ID
+        if not self.tags:
+            return None
+        return max(self.tags, key=lambda k: len(self.tags[k]['rv']))
+
+    def _ref_count(self):
+        rid = self._ref_id()
+        return len(self.tags[rid]['rv']) if rid is not None else 0
 
     @staticmethod
     def _cloud_topic(image_topic: str) -> str:
@@ -362,7 +381,7 @@ class MultiviewCalibNode(Node):
             return ns, f'{ns}_camera_frame', lf
         return self.ns, self.camera_frame, self.lidar_frame
 
-    def _refine_depth(self, R, t):
+    def _refine_depth(self, R, t, marker_size):
         """Snap the marker depth to the LiDAR plane, keeping the STag rotation.
 
         Trust the STag marker normal n=R[:,2]; gather LiDAR points inside the
@@ -389,7 +408,7 @@ class MultiviewCalibNode(Node):
         rel = pts_c - c
         lateral = rel - np.outer(rel @ n, n)      # in-plane offset from centre
         m = (np.abs(s - s0) < band) & \
-            (np.einsum('ij,ij->i', lateral, lateral) < (0.75 * self.a.marker_size) ** 2)
+            (np.einsum('ij,ij->i', lateral, lateral) < (0.75 * marker_size) ** 2)
         k = int(m.sum())
         if k < 30:
             return t, {'status': f'only {k} LiDAR pts in marker region'}
@@ -430,25 +449,32 @@ class MultiviewCalibNode(Node):
 
     # ---- visualization / persistence -----------------------------------------
 
-    def _annotate(self, dbg, mid, t, rmse):
-        cv2.putText(dbg, f'id={mid}  t=({t[0]:+.3f},{t[1]:+.3f},{t[2]:+.3f})m  '
-                         f'reproj={rmse:.2f}px',
-                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+    def _annotate(self, dbg):
+        # one short line per tag: id (REF/aux), views collected, size
+        y = 30
+        for mid in sorted(self.tags):
+            n = len(self.tags[mid]['rv'])
+            tag = 'REF' if mid == REF_ID else 'aux'
+            col = (0, 255, 0) if mid == REF_ID else (0, 200, 255)
+            cv2.putText(dbg, f'id={mid}[{tag}] {n}/{self.a.num_frames}  {_size_of(mid):.2f}m',
+                        (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, col, 2)
+            y += 28
 
     def _hud(self, dbg):
-        n = len(self.rvecs)
+        rid = self._ref_id()
+        n = self._ref_count()
         full = ' (full)' if n >= self.a.num_frames else ''
-        line = f'collected {n}/{self.a.num_frames}{full}  ref_id={self.chosen_id}'
+        line = f'ref=id{rid} {n}/{self.a.num_frames}{full}  tags={sorted(self.tags)}'
         if self.a.display:
             line += ('   [s]save [r]reset [q]quit' if n >= self.a.min_frames
-                     else f'   (need >={self.a.min_frames} to save)')
+                     else f'   (need >={self.a.min_frames} on ref)')
         cv2.putText(dbg, line, (10, dbg.shape[0] - 15),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
     def _maybe_dump_debug(self, dbg):
-        # save a debug frame roughly every `num_frames`/6 captures, capped
+        # save a debug frame roughly every `num_frames`/6 reference captures, capped
         every = max(1, self.a.num_frames // 6)
-        n = len(self.rvecs)
+        n = self._ref_count()
         if n > 0 and n != self.last_save_dbg and n % every == 0:
             self.last_save_dbg = n
             cv2.imwrite(str(self.out_dir / f'detect_{n:03d}.png'), dbg)
@@ -472,41 +498,45 @@ class MultiviewCalibNode(Node):
             self.a.display = False  # headless → silently switch to auto mode
 
     def _reset_collection(self):
-        self.rvecs.clear()
-        self.tvecs.clear()
-        self.errs.clear()
+        self.tags.clear()
         self._clouds.clear()
-        self.chosen_id = None
         self.last_save_dbg = -1
-        self.get_logger().info('[reset] cleared collected views — re-aim the marker, then [s]')
+        self.get_logger().info('[reset] cleared all tags — re-aim the markers, then [s]')
 
     def _finish(self, reason: str):
         if self.saved:
             return
-        if len(self.rvecs) < self.a.min_frames:
+        rid = self._ref_id()
+        if rid is None or len(self.tags[rid]['rv']) < self.a.min_frames:
             self.get_logger().warn(
-                f'only {len(self.rvecs)} good views (<{self.a.min_frames}); not saving yet')
+                f'reference tag (id {REF_ID}) needs >= {self.a.min_frames} views; not saving yet')
             return
-        rvecs = np.asarray(self.rvecs)
-        tvecs = np.asarray(self.tvecs)
-        R = _mean_rotation(rvecs)
-        t_mono = np.median(tvecs, axis=0)
-        t = t_mono.copy()
-        rmse = float(np.mean(self.errs))
 
-        refine = None
-        if self.a.depth_refine:
-            t_ref, refine = self._refine_depth(R, t_mono)
-            if refine.get('status') == 'ok':
-                self.get_logger().info(
-                    f'[depth-refine] depth {refine["depth_before_m"]:.3f} → '
-                    f'{refine["depth_after_m"]:.3f} m (Δ{refine["delta_m"]:+.3f} m) '
-                    f'from {refine["inliers"]}/{refine["used"]} LiDAR pts')
-                t = t_ref
-            else:
-                self.get_logger().warn(f'[depth-refine] skipped: {refine["status"]}')
+        # average + LiDAR-RANSAC depth-refine for every sufficiently-seen tag
+        results = {}
+        for mid, tag in self.tags.items():
+            if len(tag['rv']) < self.a.min_frames:
+                continue
+            R = _mean_rotation(np.asarray(tag['rv']))
+            t_mono = np.median(np.asarray(tag['tv']), axis=0)
+            t = t_mono.copy()
+            size = _size_of(mid)
+            refine = None
+            if self.a.depth_refine:
+                t_ref, refine = self._refine_depth(R, t_mono, size)
+                if refine.get('status') == 'ok':
+                    t = t_ref
+            results[mid] = dict(R=R, t=t, t_mono=t_mono, size=size,
+                                rmse=float(np.mean(tag['err'])), n=len(tag['rv']), refine=refine)
+            ref = refine
+            ok = ref and ref.get('status') == 'ok'
+            self.get_logger().info(
+                f'[tag {mid}{" REF" if mid == rid else ""}] {results[mid]["n"]} views  '
+                f'reproj {results[mid]["rmse"]:.2f}px  ' +
+                (f'depth {ref["depth_before_m"]:.3f}→{ref["depth_after_m"]:.3f} m (Δ{ref["delta_m"]:+.3f})'
+                 if ok else f'depth-refine: {ref["status"] if ref else "off"}'))
 
-        self._save(R, t, rmse, len(self.rvecs), refine, t_mono)
+        self._save(rid, results)
         self.get_logger().info(f'[multiview_calib] saved ({reason}); shutting down.')
         self.saved = True
         if self.a.display:
@@ -516,9 +546,10 @@ class MultiviewCalibNode(Node):
                 pass
         rclpy.shutdown()
 
-    def _save(self, R, t, rmse, n, refine=None, t_mono=None):
+    def _save(self, rid, results):
         ns, camera_frame, lidar_frame = self._resolve_frames()
-        depth_ok = bool(refine and refine.get('status') == 'ok')
+        ref = results[rid]
+        depth_ok = bool(ref['refine'] and ref['refine'].get('status') == 'ok')
         yml = self.dev_dir / 'multiview.yml'
         fs = cv2.FileStorage(str(yml), cv2.FILE_STORAGE_WRITE)
         fs.write('camera_id', self.serial)
@@ -528,50 +559,53 @@ class MultiviewCalibNode(Node):
         fs.write('lidar_frame', lidar_frame)
         fs.write('reference_frame', 'stag_marker')
         fs.write('library_hd', int(self.a.library_hd))
-        fs.write('marker_id', int(self.chosen_id))
-        fs.write('marker_size', float(self.a.marker_size))
-        fs.write('num_frames', int(n))
-        fs.write('reproj_rmse_px', float(rmse))
+        fs.write('marker_id', int(rid))
+        fs.write('marker_size', float(ref['size']))
+        fs.write('num_frames', int(ref['n']))
+        fs.write('reproj_rmse_px', float(ref['rmse']))
         fs.write('depth_refined', 1 if depth_ok else 0)
         if depth_ok:
-            fs.write('depth_delta_m', float(refine['delta_m']))
-        # x_cam = R * x_marker + t   (marker frame → rgb camera optical frame)
-        fs.write('R', np.ascontiguousarray(R, np.float64))
-        fs.write('t', np.ascontiguousarray(t.reshape(3, 1), np.float64))
+            fs.write('depth_delta_m', float(ref['refine']['delta_m']))
+        # canonical: reference tag pose in rgb cam = stag_marker ↔ rgb (x_cam = R·x_marker + t)
+        fs.write('R', np.ascontiguousarray(ref['R'], np.float64))
+        fs.write('t', np.ascontiguousarray(ref['t'].reshape(3, 1), np.float64))
+        # every tag (incl. reference), pose in the rgb cam frame, for TF sharing
+        ids = sorted(results)
+        fs.write('tag_count', int(len(ids)))
+        for k, mid in enumerate(ids):
+            r = results[mid]
+            ddv = r['refine']['delta_m'] if (r['refine'] and r['refine'].get('status') == 'ok') else 0.0
+            fs.write(f'tag_{k}_id', int(mid))
+            fs.write(f'tag_{k}_size', float(r['size']))
+            fs.write(f'tag_{k}_R', np.ascontiguousarray(r['R'], np.float64))
+            fs.write(f'tag_{k}_t', np.ascontiguousarray(r['t'].reshape(3, 1), np.float64))
+            fs.write(f'tag_{k}_depth_delta_m', float(ddv))
         fs.release()
 
-        # camera pose in the marker (reference) frame, for the human-readable summary
-        R_mc = R.T
-        t_mc = (-R.T @ t).reshape(3)
+        # human-readable summary — the per-tag monocular→RANSAC depth comparison
         summary = self.out_dir / 'summary.txt'
         with open(summary, 'w') as f:
             f.write(f'multiview calibration — {self.serial}\n')
-            f.write(f'timestamp     : {datetime.datetime.now().isoformat(timespec="seconds")}\n')
-            f.write(f'image_topic   : {self.a.image_topic}\n')
-            f.write(f'reference     : stag_marker (HD{self.a.library_hd} id={self.chosen_id}, '
-                    f'{self.a.marker_size} m)\n')
-            f.write(f'views used    : {n}\n')
-            f.write(f'reproj RMSE   : {rmse:.3f} px\n')
-            if depth_ok:
-                f.write(f'depth refine  : {refine["depth_before_m"]:.3f} → '
-                        f'{refine["depth_after_m"]:.3f} m  (Δ{refine["delta_m"]:+.3f} m, '
-                        f'{refine["inliers"]}/{refine["used"]} LiDAR pts)\n')
-            elif refine is not None:
-                f.write(f'depth refine  : skipped ({refine["status"]})\n')
-            f.write('\n')
-            f.write('marker pose in RGB camera frame (x_cam = R*x_marker + t):\n')
-            f.write(f'  R =\n{np.array2string(R, precision=6)}\n')
-            f.write(f'  t = {np.array2string(t.reshape(3), precision=6)} m\n')
-            if depth_ok and t_mono is not None:
-                f.write(f'  t (monocular, before depth-refine) = '
-                        f'{np.array2string(t_mono.reshape(3), precision=6)} m\n')
-            f.write('\n')
-            f.write('RGB camera pose in marker (reference) frame:\n')
-            f.write(f'  cam@marker = {np.array2string(t_mc, precision=6)} m\n')
+            f.write(f'timestamp  : {datetime.datetime.now().isoformat(timespec="seconds")}\n')
+            f.write(f'reference  : stag_marker = tag id {rid} ({ref["size"]:.2f} m)\n')
+            f.write(f'tags       : {ids}\n\n')
+            f.write('per-tag depth-refine (monocular range → LiDAR-RANSAC range):\n')
+            for mid in ids:
+                r = results[mid]
+                rf = r['refine']
+                tag = 'REF' if mid == rid else 'aux'
+                if rf and rf.get('status') == 'ok':
+                    f.write(f'  id {mid:>3} [{tag}] {r["size"]:.2f}m :  '
+                            f'{rf["depth_before_m"]:.3f} → {rf["depth_after_m"]:.3f} m  '
+                            f'(Δ{rf["delta_m"]:+.3f} m, {rf["inliers"]}/{rf["used"]} pts)\n')
+                else:
+                    f.write(f'  id {mid:>3} [{tag}] {r["size"]:.2f}m :  '
+                            f'{np.linalg.norm(r["t_mono"]):.3f} m  '
+                            f'(refine: {rf["status"] if rf else "off"})\n')
+        t_mc = (-ref['R'].T @ ref['t']).reshape(3)
         self.get_logger().info(
-            f'  → {yml}\n  → {summary}\n'
-            f'  reproj RMSE={rmse:.3f}px  cam@marker=('
-            f'{t_mc[0]:+.3f},{t_mc[1]:+.3f},{t_mc[2]:+.3f}) m')
+            f'  → {yml}  ({len(ids)} tags, ref id {rid})\n  → {summary}\n'
+            f'  cam@marker=({t_mc[0]:+.3f},{t_mc[1]:+.3f},{t_mc[2]:+.3f}) m')
 
 
 def main():
@@ -616,7 +650,7 @@ def main():
         # Headless auto-saves on exit if enough views; with a display, saving is
         # explicit ([s]) — quitting ([q] / Ctrl-C) must NOT save.
         if (not node.saved and not node.a.display
-                and len(node.rvecs) >= args.min_frames):
+                and node._ref_count() >= args.min_frames):
             node._finish('shutdown auto-save (headless)')
         node.destroy_node()
         if rclpy.ok():

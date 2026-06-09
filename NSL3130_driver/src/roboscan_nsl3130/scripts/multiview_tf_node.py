@@ -130,6 +130,25 @@ class MultiviewTfNode(Node):
                 transforms.append(self._tf(camera_frame, R_mc, t_mc))
                 accepted.append((serial, camera_frame, t_mc, False))
 
+            # Auxiliary tags — publish each as stag_marker → tag_{id}_frame:
+            #   tag in marker = (cam in marker) ∘ (tag in cam) = (R_mc·Ri, R_mc·ti + t_mc)
+            fs = cv2.FileStorage(str(mv), cv2.FILE_STORAGE_READ)
+            ref_id = int(fs.getNode('marker_id').real() or -1)
+            ntag = int(fs.getNode('tag_count').real() or 0)
+            for k in range(ntag):
+                tid = int(fs.getNode(f'tag_{k}_id').real())
+                if tid == ref_id:
+                    continue   # the reference tag IS the origin
+                Ri = fs.getNode(f'tag_{k}_R').mat()
+                ti = fs.getNode(f'tag_{k}_t').mat()
+                if Ri is None or ti is None or Ri.size != 9 or ti.size != 3:
+                    continue
+                Ri = np.asarray(Ri, np.float64).reshape(3, 3)
+                ti = np.asarray(ti, np.float64).reshape(3)
+                transforms.append(self._tf(f'tag_{tid}_frame', R_mc @ Ri, R_mc @ ti + t_mc))
+                accepted.append((serial, f'tag_{tid}_frame', R_mc @ ti + t_mc, True))
+            fs.release()
+
         if transforms:
             self.bc.sendTransform(transforms)
 
