@@ -12,7 +12,7 @@
 #     source ~/colcon_ws/src/NSL-3130AA-ROS2/setup/setup_dds_interface.bash
 #
 # It re-detects the local 192.168.0.x address each shell. Camera Edge machines
-# are expected to live in 192.168.0.50-59 (namespace /cam_50 ... /cam_59);
+# are expected to live in 192.168.0.51-59 (namespace /cam_51 ... /cam_59);
 # Host/viewer machines may use another 192.168.0.x address. Restart all ROS 2
 # processes after enabling it.
 

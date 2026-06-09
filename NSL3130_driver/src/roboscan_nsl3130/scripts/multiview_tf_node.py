@@ -31,6 +31,7 @@ reference frame.
 Usage (via multiview.launch.py, automatic) or standalone:
     python3 multiview_tf_node.py --calib-dir /path/to/calib_output
     python3 multiview_tf_node.py --calib-dir ... --camera-id N00A5060D   # one camera
+    python3 multiview_tf_node.py --calib-dir ... --camera-id N00A5060D --frame-prefix cam_52
 """
 
 import argparse
@@ -83,9 +84,10 @@ def _read_Rt(yml_path: Path):
 
 class MultiviewTfNode(Node):
 
-    def __init__(self, calib_dir: str, camera_filter: str):
+    def __init__(self, calib_dir: str, camera_filter: str, frame_prefix: str):
         super().__init__('multiview_tf_node')
         self.calib_dir = Path(os.path.expanduser(calib_dir))
+        self.frame_prefix = frame_prefix.strip().strip('/')
         self.bc = StaticTransformBroadcaster(self)
         self._publish_all(camera_filter)
 
@@ -116,6 +118,9 @@ class MultiviewTfNode(Node):
             camera_frame = fs.getNode('camera_frame').string() or f'{serial}_camera_frame'
             lidar_frame = fs.getNode('lidar_frame').string() or f'{serial}_lidar_frame'
             fs.release()
+            if self.frame_prefix:
+                camera_frame = f'{self.frame_prefix}_camera_frame'
+                lidar_frame = f'{self.frame_prefix}_lidar_frame'
 
             ext = _read_Rt(dev / 'extrinsic.yml') if (dev / 'extrinsic.yml').exists() else None
             if ext is not None:
@@ -189,10 +194,12 @@ def main():
     ap.add_argument('--calib-dir', required=True, help='calib_output directory')
     ap.add_argument('--camera-id', default='',
                     help='Only anchor this serial; empty = every multiview-calibrated camera')
+    ap.add_argument('--frame-prefix', default='',
+                    help='Override saved frame names, e.g. cam_52 -> cam_52_lidar_frame')
     args, ros_args = ap.parse_known_args()
 
     rclpy.init(args=ros_args or None)
-    node = MultiviewTfNode(args.calib_dir, args.camera_id)
+    node = MultiviewTfNode(args.calib_dir, args.camera_id, args.frame_prefix)
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

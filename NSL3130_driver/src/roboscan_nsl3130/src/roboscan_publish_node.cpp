@@ -188,13 +188,16 @@ void roboscanPublisher::initNslLibrary()
 
 	if (conn != "usb") {
 		if (net_preflight && !cameraNetworkReachable(viewerParam.ipAddr, 1000)) {
-			RCLCPP_ERROR(this->get_logger(),
-				"Camera network preflight failed at %s. Skipping SDK nsl_open() to avoid USB fallback churn. "
-				"Power-cycle/replug the camera or run change_camera_ip, then check ping again.",
-				viewerParam.ipAddr.c_str());
 			if (conn == "ethernet") {
+				RCLCPP_ERROR(this->get_logger(),
+					"Camera network preflight failed at %s. Strict connection:=ethernet skips USB recovery. "
+					"Power-cycle/replug the camera or run setup/setup_fleet_edge.bash --set-camera-ip, then check ping again.",
+					viewerParam.ipAddr.c_str());
 				return;
 			}
+			RCLCPP_WARN(this->get_logger(),
+				"Camera network preflight failed at %s. connection:=auto will try USB IP recovery/fallback.",
+				viewerParam.ipAddr.c_str());
 		}
 	}
 
@@ -207,7 +210,7 @@ void roboscanPublisher::initNslLibrary()
 		} else if (conn == "ethernet") {
 			RCLCPP_ERROR(this->get_logger(),
 				"connection:=ethernet but Ethernet open failed (code: %d) at %s. "
-				"Check camera power/Ethernet link and that the camera IP was set by change_camera_ip.",
+				"Check camera power/Ethernet link and that the camera IP was set by setup/setup_fleet_edge.bash.",
 				nsl_handle, viewerParam.ipAddr.c_str());
 			return;
 		}
@@ -243,7 +246,7 @@ void roboscanPublisher::initNslLibrary()
 		} else {
 			RCLCPP_WARN(this->get_logger(),
 				"Ethernet still not reachable after USB IP update; falling back to USB streaming for this run. "
-				"Power-cycle the camera after change_camera_ip for stable fleet use.");
+				"Power-cycle the camera after setup/setup_fleet_edge.bash --set-camera-ip for stable fleet use.");
 			nsl_handle = nsl_open(usb_id.c_str(), &nslConfig, FUNCTION_OPTIONS::FUNC_ON);
 		}
 	}
@@ -251,7 +254,7 @@ void roboscanPublisher::initNslLibrary()
 	if (nsl_handle < 0) {
 		RCLCPP_ERROR(this->get_logger(),
 			"NSL camera open failed (code: %d). Detected USB serial='%s', USB id used='%s', target IP=%s. "
-			"If lsusb shows 1fc9:0099 but this persists, power-cycle/replug the camera and rerun change_camera_ip.",
+			"If lsusb shows 1fc9:0099 but this persists, power-cycle/replug the camera and rerun setup/setup_fleet_edge.bash --set-camera-ip.",
 			nsl_handle, viewerParam.camera_id.c_str(), usb_id.c_str(), viewerParam.ipAddr.c_str());
 		return;
 	}
@@ -958,7 +961,7 @@ void roboscanPublisher::initialise()
 	viewerParam.lidarAngle = 0;
 
 	viewerParam.frame_id = "lidar_frame";
-	viewerParam.ipAddr   = "192.168.2.220";
+	viewerParam.ipAddr   = "192.168.2.201";
 	viewerParam.netMask  = "255.255.255.0";
 	viewerParam.gwAddr   = "192.168.2.1";
 	viewerParam.usbPath  = "";
@@ -966,7 +969,7 @@ void roboscanPublisher::initialise()
 	load_params();
 	initNslLibrary();    // sets camera_id via USB serial auto-detect
 
-	// frame_id derived from USB serial; NSL_FRAME_ID overrides for IP-based naming (e.g. cam_59_lidar_frame)
+	// frame_id derived from USB serial; NSL_FRAME_ID overrides for IP-based naming (e.g. cam_51_lidar_frame)
 	viewerParam.frame_id = viewerParam.camera_id.empty()
 	    ? "lidar_frame"
 	    : viewerParam.camera_id + "_lidar_frame";

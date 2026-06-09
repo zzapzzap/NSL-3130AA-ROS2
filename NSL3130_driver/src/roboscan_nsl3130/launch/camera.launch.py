@@ -12,6 +12,14 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
+FLEET_FIRST_OCTET = 51
+FLEET_LAST_OCTET = 59
+CAMERA_HOST_OFFSET = 50
+CAMERA_SENSOR_OFFSET = 150
+DEFAULT_CAMERA_IP = '192.168.2.201'
+DEFAULT_CAMERA_GATEWAY = '192.168.2.1'
+
+
 def generate_launch_description():
 
     pkg_share = get_package_share_directory('roboscan_nsl3130')
@@ -62,7 +70,7 @@ def generate_launch_description():
     def _resolve_namespace(context, ip_octet):
         """Resolve the per-device namespace based on the machine's IP last octet.
 
-          namespace:=auto    → cam_{last_octet}  e.g. cam_59; DEFAULT.
+          namespace:=auto    → cam_{last_octet}  e.g. cam_51; DEFAULT.
                                Falls back to '' when no 192.168.0.x address found.
           namespace:=''      → no namespace → /camera/point_cloud, ...
           namespace:=<name>  → used verbatim.
@@ -78,6 +86,73 @@ def generate_launch_description():
         if ns:
             print(f'[camera] topics → /{ns}/camera/point_cloud, /{ns}/camera/rgb/image_raw, ...')
         return ns
+
+    def _fleet_octet(ip_octet):
+        try:
+            octet = int(ip_octet)
+        except (TypeError, ValueError):
+            return None
+        if FLEET_FIRST_OCTET <= octet <= FLEET_LAST_OCTET:
+            return octet
+        return None
+
+    def _resolve_camera_network(context, ip_octet):
+        """Resolve camera-link addresses from the fleet Set number.
+
+        Rule: Edge LAN 192.168.0.N uses camera NIC 192.168.2.(N+50) and
+        camera sensor 192.168.2.(N+150). Example: N=51 -> 101/201.
+        """
+        octet = _fleet_octet(ip_octet)
+        raw_ip = LaunchConfiguration('camera_ip').perform(context).strip()
+        raw_gateway = LaunchConfiguration('camera_gateway').perform(context).strip()
+
+        if raw_ip.lower() == 'auto':
+            if octet is not None:
+                camera_ip = f'192.168.2.{octet + CAMERA_SENSOR_OFFSET}'
+                print(f'[camera] camera_ip: {camera_ip}  (auto from Set {octet})')
+            else:
+                camera_ip = DEFAULT_CAMERA_IP
+                print(f'[camera] camera_ip:=auto but Set number is not {FLEET_FIRST_OCTET}-{FLEET_LAST_OCTET}; using {camera_ip}')
+        else:
+            camera_ip = raw_ip
+
+        camera_gateway = DEFAULT_CAMERA_GATEWAY if raw_gateway.lower() == 'auto' else raw_gateway
+
+        return camera_ip, camera_gateway
+
+    def _refresh_fastdds_profile(ip_octet):
+        if not ip_octet:
+            return
+        lan_ip = f'192.168.0.{ip_octet}'
+        ros_dir = os.path.join(os.path.expanduser('~'), '.ros')
+        profile = os.path.join(ros_dir, 'fastdds_nsl.xml')
+        os.makedirs(ros_dir, exist_ok=True)
+        with open(profile, 'w') as f:
+            f.write(f'''<?xml version="1.0" encoding="UTF-8" ?>
+<dds xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+    <profiles>
+        <transport_descriptors>
+            <transport_descriptor>
+                <transport_id>nsl_lan</transport_id>
+                <type>UDPv4</type>
+                <interfaceWhiteList>
+                    <address>{lan_ip}</address>
+                </interfaceWhiteList>
+            </transport_descriptor>
+        </transport_descriptors>
+        <participant profile_name="nsl_lan_only" is_default_profile="true">
+            <rtps>
+                <userTransports>
+                    <transport_id>nsl_lan</transport_id>
+                </userTransports>
+                <useBuiltinTransports>false</useBuiltinTransports>
+            </rtps>
+        </participant>
+    </profiles>
+</dds>
+''')
+        os.environ['FASTRTPS_DEFAULT_PROFILES_FILE'] = profile
+        print(f'[camera] FastDDS whitelist: {lan_ip}  ({profile})')
 
     def _resolve_params_file(context, serial):
         """Pick the sensor-params file for the driver.
@@ -154,7 +229,9 @@ def generate_launch_description():
     def _fleet_setup(context):
         serial = _detect_serial()
         ip_octet = _detect_ip_octet()
+        _refresh_fastdds_profile(ip_octet)
         ns = _resolve_namespace(context, ip_octet)
+        camera_ip, camera_gateway = _resolve_camera_network(context, ip_octet)
         params_file = _resolve_params_file(context, serial)
 
         frame_id = f'{ns}_lidar_frame' if ns else ''
@@ -168,9 +245,9 @@ def generate_launch_description():
             additional_env={'NSL_CALIB_DIR': calib_dir,
                             'NSL_PARAMS_FILE': params_file,
                             'NSL_CAMERA_ID': serial,
-                            'NSL_CAMERA_IP': LaunchConfiguration('camera_ip').perform(context),
+                            'NSL_CAMERA_IP': camera_ip,
                             'NSL_CAMERA_NETMASK': LaunchConfiguration('camera_netmask').perform(context),
-                            'NSL_CAMERA_GATEWAY': LaunchConfiguration('camera_gateway').perform(context),
+                            'NSL_CAMERA_GATEWAY': camera_gateway,
                             'NSL_NET_PREFLIGHT': LaunchConfiguration('net_preflight').perform(context),
                             'NSL_USB_ID': LaunchConfiguration('usb_id').perform(context),
                             'NSL_FRAME_ID': frame_id,
@@ -205,6 +282,8 @@ def generate_launch_description():
             cmd = ['python3', multiview_tf_script, '--calib-dir', calib_dir]
             if serial:
                 cmd += ['--camera-id', serial]
+            if ns:
+                cmd += ['--frame-prefix', ns]
             actions.append(ExecuteProcess(cmd=cmd, output='screen'))
 
         # rviz2 (config rewritten for the namespace so the bundled view still works)
@@ -218,8 +297,8 @@ def generate_launch_description():
         # ── General ──────────────────────────────────────────────────────────
         DeclareLaunchArgument(
             'namespace', default_value='auto',
-            description="Per-device topic namespace. 'auto'=camera serial → "
-                        "/<serial>/point_cloud, /<serial>/rgb/image_raw, ... (DEFAULT); "
+            description="Per-device topic namespace. 'auto'=machine 192.168.0.x octet → "
+                        "/cam_<octet>/camera/point_cloud, ... (DEFAULT); "
                         "''=none; or an explicit name."),
         DeclareLaunchArgument(
             'use_rviz', default_value='true',
@@ -236,21 +315,21 @@ def generate_launch_description():
                         '(STag shared reference; warns and skips if not yet calibrated)'),
         DeclareLaunchArgument(
             'connection', default_value='ethernet',
-            description="'ethernet'=fleet runtime path (DEFAULT, no USB fallback); "
-                        "'auto'=Ethernet then USB IP refresh/fallback for recovery; "
+            description="'ethernet'=strict fleet runtime path with no USB fallback (DEFAULT); "
+                        "'auto'=Ethernet first, then USB IP refresh/fallback if needed; "
                         "'usb'=USB only."),
         DeclareLaunchArgument(
-            'camera_ip', default_value='192.168.2.220',
-            description='Camera IP on the isolated Edge-camera link'),
+            'camera_ip', default_value='auto',
+            description='auto=192.168.2.(Set+150), e.g. Set 51 -> 192.168.2.201'),
         DeclareLaunchArgument(
             'camera_netmask', default_value='255.255.255.0',
-            description='Camera netmask used only when connection:=auto refreshes IP over USB'),
+            description='Camera netmask on the 192.168.2.x camera link'),
         DeclareLaunchArgument(
-            'camera_gateway', default_value='192.168.2.1',
-            description='Camera gateway used only when connection:=auto refreshes IP over USB'),
+            'camera_gateway', default_value='auto',
+            description='auto=192.168.2.1, matching the camera NIC GUI setup'),
         DeclareLaunchArgument(
             'net_preflight', default_value='true',
-            description='true=check ping reachability before SDK nsl_open(ip) to avoid USB fallback churn'),
+            description='true=check ping reachability before Ethernet SDK open'),
         DeclareLaunchArgument(
             'usb_id', default_value='',
             description='Optional USB path or serial for connection:=usb/auto; empty uses detected serial'),
@@ -260,7 +339,7 @@ def generate_launch_description():
                         'false → per-camera profile (calib_output/{id}/params.yaml), '
                         'falling back to the general default'),
         # ── Topic remap targets (relative, nested under namespace)
-        # With namespace=cam_59 these become /cam_59/camera/rgb/image_raw etc. ──
+        # With namespace=cam_51 these become /cam_51/camera/rgb/image_raw etc. ──
         DeclareLaunchArgument('rgb_topic',             default_value='camera/rgb/image_raw'),
         DeclareLaunchArgument('depth_topic',           default_value='camera/depth/image_raw'),
         DeclareLaunchArgument('ampl_topic',            default_value='camera/ampl'),
