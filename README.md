@@ -333,7 +333,7 @@ ros2 run tf2_ros tf2_echo {ns}_lidar_frame {ns}_camera_frame   # 예: cam_58_lid
 
 ### 4-3. Multiview (STag) 캘리브레이션 — 카메라 간 공유 기준 프레임
 
-여러 카메라를 **하나의 STag 마커**로 묶어 공통 기준(`stag_marker`)을 세우고, 그 결과로 카메라 간 외부 파라미터를 공유합니다. 각 카메라가 같은 마커의 6-DoF 자세를 저장해 두면, `multi_viewer.launch.py` 가 모든 카메라를 `stag_marker` 아래로 정렬해 한 좌표계에서 보여줍니다.
+여러 카메라를 **하나의 STag 마커**로 묶어 공통 기준(`stag_marker`)을 세우고, 그 결과로 카메라 간 외부 파라미터를 공유합니다. 각 카메라가 같은 마커의 6-DoF 자세를 저장해 두면, `multiview.launch.py` 가 모든 카메라를 `stag_marker` 아래로 정렬해 한 좌표계에서 보여줍니다.
 
 **필요 조건**: `stag-python` 설치([2-1](#2-1-python-의존성-멀티뷰-stag-캘리브용-머신마다-1회)) + `camera.launch.py` 실행 중 + Intrinsic 완료(`{camera_id}/intrinsic.yml`). Extrinsic(`extrinsic.yml`)이 있으면 포인트클라우드(LiDAR 프레임)까지 마커 기준으로 앵커링되고, 없으면 RGB 카메라 프레임만 앵커링됩니다.
 
@@ -368,7 +368,7 @@ ros2 launch roboscan_nsl3130 multiview.launch.py calibration:=True display:=fals
 
 > 프레임 이름(`{ns}_lidar_frame` 등)은 **라이브 포인트클라우드의 실제 frame_id** 를 읽어 저장하므로, 캘리브를 어느 머신에서 돌리든 뷰어의 라이브 드라이버와 항상 일치합니다.
 
-> 결과 확인은 6-4의 `multi_viewer.launch.py` 로 합니다(아래).
+> 결과 확인은 6-4의 `multiview.launch.py` 로 합니다(아래).
 
 ---
 
@@ -476,7 +476,7 @@ rviz2   # PointCloud2 디스플레이 토픽을 /cam_{옥텟}/camera/point_cloud
 **여러 카메라를 한 좌표계에서 (STag 공유 기준):** 각 카메라가 [4-3 multiview 캘리브](#4-3-multiview-stag-캘리브레이션--카메라-간-공유-기준-프레임)를 마치면, **각 Edge의 `camera.launch.py` 가 자기 `stag_marker → {ns}_lidar_frame` TF를 `/tf_static` 으로 발행**합니다(모두 같은 물리 마커를 기준으로 잡으니 독립 캘리브라도 트리가 일관됩니다). `/tf_static`·포인트클라우드는 DDS 토픽이라 **같은 `ROS_DOMAIN_ID`면 자동으로 공유**됩니다(6-2의 DDS 인터페이스 제한 필수). Host에서는 뷰어만 띄우면 됩니다:
 
 ```bash
-ros2 launch roboscan_nsl3130 multi_viewer.launch.py
+ros2 launch roboscan_nsl3130 multiview.launch.py
 ```
 
 - RViz Fixed Frame 이 항상 **`stag_marker`** 로 고정되고, 도메인의 **모든 Edge가 발행한 TF**를 받아 카메라들을 그 아래로 정렬합니다 — Host에 캘리브 파일이 없어도 됩니다.

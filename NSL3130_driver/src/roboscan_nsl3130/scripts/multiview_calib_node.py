@@ -12,7 +12,7 @@ The saved R, t express the MARKER pose in the RGB CAMERA optical frame:
         x_cam = R · x_marker + t          (marker frame → camera frame)
 
 so the camera's pose in the marker (reference) frame is its inverse,
-(Rᵀ, −Rᵀ·t).  multi_viewer.launch.py uses exactly this to anchor every camera
+(Rᵀ, −Rᵀ·t).  multiview.launch.py uses exactly this to anchor every camera
 under the shared `stag_marker` frame and rejects any camera whose R|t is
 missing/unreadable.
 

@@ -28,7 +28,7 @@ REJECTION (step 5): a camera whose multiview.yml is missing, unreadable, or has
 a malformed R|t is skipped with a warning and simply does not appear under the
 reference frame.
 
-Usage (via multi_viewer.launch.py, automatic) or standalone:
+Usage (via multiview.launch.py, automatic) or standalone:
     python3 multiview_tf_node.py --calib-dir /path/to/calib_output
     python3 multiview_tf_node.py --calib-dir ... --camera-id N00A5060D   # one camera
 """

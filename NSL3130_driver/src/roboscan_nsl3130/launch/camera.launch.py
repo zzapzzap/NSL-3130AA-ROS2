@@ -193,7 +193,7 @@ def generate_launch_description():
 
         # STag multiview → TF. Anchors this camera under the shared `stag_marker`
         # reference frame from calib_output/{serial}/multiview.yml (composed with the
-        # extrinsic for the lidar frame). Same role as multi_viewer.launch.py but
+        # extrinsic for the lidar frame). Same role as multiview.launch.py but
         # published per-edge; warns and skips if multiview is not calibrated yet.
         if _is_true(context, 'use_multiview_tf'):
             cmd = ['python3', multiview_tf_script, '--calib-dir', calib_dir]
