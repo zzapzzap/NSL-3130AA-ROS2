@@ -151,7 +151,7 @@ def _cloud_to_xyz(msg):
     return pts if pts.ndim == 2 and pts.shape[0] else None
 
 
-def _ransac_offset(s, tol=0.03, iters=200):
+def _ransac_offset(s, tol=0.10, iters=200):
     """1-D plane-offset RANSAC along a fixed (trusted) normal: find the largest
     set of projected depths `s` agreeing within `tol`. Returns (offset, inliers)."""
     s = np.asarray(s, np.float64)
@@ -413,7 +413,7 @@ class MultiviewCalibNode(Node):
         if k < 30:
             return t, {'status': f'only {k} LiDAR pts in marker region'}
 
-        d_pl, inl = _ransac_offset(s[m], tol=min(0.03, band / 3.0))
+        d_pl, inl = _ransac_offset(s[m], tol=min(self.a.ransac_tol, band))
         if inl < max(15, int(0.3 * k)):
             return t, {'status': f'weak plane ({inl}/{k} inliers)'}
 
@@ -631,6 +631,9 @@ def main():
                     help='Snap marker depth onto the LiDAR plane via RANSAC (true/false)')
     ap.add_argument('--depth-band', type=float, default=0.20,
                     help='± depth band (m) around the 1st-pass marker plane for the LiDAR RANSAC')
+    ap.add_argument('--ransac-tol', type=float, default=0.10,
+                    help='RANSAC inlier tolerance (m): LiDAR points within this distance of the '
+                         'consensus marker plane are inliers (capped at --depth-band)')
     args, ros_args = ap.parse_known_args()
     args.display = str(args.display).strip().lower() in ('true', '1', 'yes')
     args.depth_refine = str(args.depth_refine).strip().lower() in ('true', '1', 'yes')

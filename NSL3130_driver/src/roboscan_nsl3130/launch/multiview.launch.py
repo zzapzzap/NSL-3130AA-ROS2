@@ -113,7 +113,8 @@ def _calib_actions(context):
              '--reproj-thresh', LaunchConfiguration('reproj_thresh').perform(context),
              '--display',       LaunchConfiguration('display').perform(context),
              '--depth-refine',  LaunchConfiguration('depth_refine').perform(context),
-             '--depth-band',    LaunchConfiguration('depth_band').perform(context)],
+             '--depth-band',    LaunchConfiguration('depth_band').perform(context),
+             '--ransac-tol',    LaunchConfiguration('ransac_tol').perform(context)],
         output='screen')]
 
 
@@ -410,6 +411,8 @@ def generate_launch_description():
             description='Per-tag LiDAR-plane RANSAC depth refine (needs extrinsic.yml)'),
         DeclareLaunchArgument('depth_band', default_value='0.20',
             description='± depth band (m) around the 1st-pass marker plane for the LiDAR RANSAC'),
+        DeclareLaunchArgument('ransac_tol', default_value='0.10',
+            description='RANSAC inlier tolerance (m) for the LiDAR marker-plane fit (capped at depth_band)'),
 
         OpaqueFunction(function=_setup),
     ])
