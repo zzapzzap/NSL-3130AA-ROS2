@@ -75,7 +75,7 @@ Visualization Manager:
           Min Color: 0; 0; 0
           Name: PointCloud
           Position Transformer: XYZ
-          Size (Pixels): 2
+          Size (Pixels): 3
           Size (m): 0.009999999776482582
           Style: Points
           Topic:
@@ -122,7 +122,7 @@ Visualization Manager:
           Min Color: 0; 0; 0
           Name: PointCloud
           Position Transformer: XYZ
-          Size (Pixels): 2
+          Size (Pixels): 3
           Size (m): 0.009999999776482582
           Style: Points
           Topic:
@@ -169,7 +169,7 @@ Visualization Manager:
           Min Color: 0; 0; 0
           Name: PointCloud
           Position Transformer: XYZ
-          Size (Pixels): 2
+          Size (Pixels): 3
           Size (m): 0.009999999776482582
           Style: Points
           Topic:
@@ -216,7 +216,7 @@ Visualization Manager:
           Min Color: 0; 0; 0
           Name: PointCloud
           Position Transformer: XYZ
-          Size (Pixels): 2
+          Size (Pixels): 3
           Size (m): 0.009999999776482582
           Style: Points
           Topic:

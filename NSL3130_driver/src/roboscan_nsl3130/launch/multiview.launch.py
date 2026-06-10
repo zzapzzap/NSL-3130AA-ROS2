@@ -15,9 +15,11 @@ Single multiview entry point (viewer + calibration in one launch file).
         calib_output/{serial}/multiview.yml.
       e.g.  calibration:=True display:=false num_frames:=40
 
-Viewer layout choices: RGB image panels dock on the LEFT, the Views/orbit panel
-is omitted (3D orbit navigation still works), background unified to 48;48;48,
-Fixed Frame is always the shared `stag_marker`.
+Viewer layout choices: the Displays (topic/status) panel sits on TOP of the left
+column with the per-camera RGB image panels stacked below it (Time at the bottom);
+the Views panel is omitted (3D orbit navigation still works), background unified to
+48;48;48, Fixed Frame is always the shared `stag_marker`. The dock arrangement is
+emitted as a QMainWindow State blob by gen_multiview_rviz_layout.py.
 """
 
 import glob
@@ -203,7 +205,7 @@ def _camera_group(cam_id, color):
           Min Color: 0; 0; 0
           Name: PointCloud
           Position Transformer: XYZ
-          Size (Pixels): 2
+          Size (Pixels): 3
           Size (m): 0.009999999776482582
           Style: Points
           Topic:
@@ -233,6 +235,20 @@ def _camera_group(cam_id, color):
 """
 
 
+def _layout_state(cam_ids):
+    """QMainWindow State hex for the viewer layout (Displays on top, each RGB image
+    below it, Time at the bottom). Built per camera-set by gen_multiview_rviz_layout.py
+    (PyQt, offscreen) so the arrangement survives a relaunch. Returns '' on any
+    failure → rviz falls back to its default docking."""
+    script = os.path.join(_scripts_dir(), 'gen_multiview_rviz_layout.py')
+    try:
+        return subprocess.check_output(
+            ['python3', script, *[str(c) for c in cam_ids]],
+            text=True, stderr=subprocess.DEVNULL, timeout=20).strip()
+    except Exception:
+        return ''
+
+
 def _build_rviz_config(cam_ids, fixed_frame):
     """Render a complete rviz2 config for exactly `cam_ids` (already sorted)."""
     expanded = '\n'.join(f'        - /cam_{c}_PointCloud1' for c in cam_ids) or \
@@ -240,6 +256,8 @@ def _build_rviz_config(cam_ids, fixed_frame):
     groups = ''.join(_camera_group(c, PALETTE[i % len(PALETTE)])
                      for i, c in enumerate(cam_ids))
     img_geometry = '\n'.join(f'  cam_{c} RGB:\n    collapsed: false' for c in cam_ids)
+    state = _layout_state(cam_ids)
+    qmw = f'  QMainWindow State: {state}\n' if state else ''
 
     return f"""\
 Panels:
@@ -327,7 +345,7 @@ Window Geometry:
   Displays:
     collapsed: false
 {img_geometry}
-  Height: 1016
+{qmw}  Height: 1016
   Width: 1850
   X: 70
   Y: 27

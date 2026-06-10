@@ -6,7 +6,7 @@ import shutil
 import subprocess
 
 from ament_index_python.packages import get_package_share_directory
-from launch import LaunchDescription, conditions
+from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess, OpaqueFunction, TimerAction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -226,6 +226,15 @@ def generate_launch_description():
     def _is_true(context, arg):
         return LaunchConfiguration(arg).perform(context).strip().lower() in ('true', '1', 'yes')
 
+    def _use_gui(context, arg):
+        """GUI toggles (use_rviz/use_rqt) default to 'auto' → follow `calibration`:
+        on while calibrating, off in the lightweight runtime. Explicit
+        true/false still overrides."""
+        val = LaunchConfiguration(arg).perform(context).strip().lower()
+        if val == 'auto':
+            return _is_true(context, 'calibration')
+        return val in ('true', '1', 'yes')
+
     def _fleet_setup(context):
         serial = _detect_serial()
         ip_octet = _detect_ip_octet()
@@ -287,10 +296,19 @@ def generate_launch_description():
             actions.append(ExecuteProcess(cmd=cmd, output='screen'))
 
         # rviz2 (config rewritten for the namespace so the bundled view still works)
-        if _is_true(context, 'use_rviz'):
+        if _use_gui(context, 'use_rviz'):
             actions.append(Node(
                 package='rviz2', executable='rviz2', name='rviz2',
                 arguments=['-d', _rviz_config(ns, serial)], output='screen'))
+
+        # rqt parameter reconfigure (delayed to let the node spin up first)
+        if _use_gui(context, 'use_rqt'):
+            actions.append(TimerAction(
+                period=12.0,
+                actions=[ExecuteProcess(
+                    cmd=['ros2', 'run', 'rqt_gui', 'rqt_gui',
+                         '--force-discover', '-s', 'rqt_reconfigure_combo'],
+                    output='screen')]))
         return actions
 
     return LaunchDescription([
@@ -301,11 +319,13 @@ def generate_launch_description():
                         "/cam_<octet>/camera/point_cloud, ... (DEFAULT); "
                         "''=none; or an explicit name."),
         DeclareLaunchArgument(
-            'use_rviz', default_value='true',
-            description='Launch rviz2 with the default config'),
+            'use_rviz', default_value='auto',
+            description="Launch rviz2. 'auto'=follow calibration (on when calibration:=true, "
+                        "off in the lightweight runtime); true/false overrides."),
         DeclareLaunchArgument(
-            'use_rqt', default_value='true',
-            description='Launch rqt_reconfigure for parameter tuning'),
+            'use_rqt', default_value='auto',
+            description="Launch rqt_reconfigure. 'auto'=follow calibration (on when "
+                        "calibration:=true, off in the lightweight runtime); true/false overrides."),
         DeclareLaunchArgument(
             'use_extrinsic_tf', default_value='true',
             description='Publish {lidar_frame}→{id}_camera_frame TF from the saved extrinsic'),
@@ -346,16 +366,6 @@ def generate_launch_description():
         DeclareLaunchArgument('gray_topic',            default_value='camera/gray'),
         DeclareLaunchArgument('point_cloud_topic',     default_value='camera/point_cloud'),
         DeclareLaunchArgument('point_cloud_rgb_topic', default_value='camera/point_cloud_rgb'),
-        # ── Driver node + extrinsic TF + rviz (namespace & profile resolved at launch) ──
+        # ── Driver node + extrinsic TF + rviz + rqt (namespace & profile resolved at launch) ──
         OpaqueFunction(function=_fleet_setup),
-        # ── rqt parameter reconfigure (delayed to let the node spin first) ──────
-        TimerAction(
-            period=12.0,
-            actions=[
-                ExecuteProcess(
-                    cmd=['ros2', 'run', 'rqt_gui', 'rqt_gui',
-                         '--force-discover', '-s', 'rqt_reconfigure_combo'],
-                    output='screen')
-            ],
-            condition=conditions.IfCondition(LaunchConfiguration('use_rqt'))),
     ])

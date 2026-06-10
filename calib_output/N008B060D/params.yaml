@@ -4,7 +4,7 @@
 # Edit live in rqt_reconfigure — saves back here.
 MaxDistance: 12500
 PointColud EDGE: 200
-ImageType: RGB_DISTANCE_AMPLITUDE
+ImageType: RGB_DISTANCE
 LensType: LENS_SF
 LidarAngle: 0
 IsReference: true
