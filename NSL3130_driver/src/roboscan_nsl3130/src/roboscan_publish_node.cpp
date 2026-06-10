@@ -696,22 +696,28 @@ void roboscanPublisher::publishCalibratedRgbCloud(
     // Reused across frames to avoid per-frame heap churn (single publisher thread).
     static thread_local std::vector<cv::Point3d> cam_pts;   // camera frame — projection input
     static thread_local std::vector<cv::Point3f> lidar_pts; // lidar frame — published xyz
-    const size_t cap = static_cast<size_t>(frame->width * frame->height);
+    const size_t cap = static_cast<size_t>(frame->width) * frame->height;
     cam_pts.clear();   cam_pts.reserve(cap);
     lidar_pts.clear(); lidar_pts.reserve(cap);
 
     for (int y = 0; y < frame->height; ++y) {
+        // Hoist the per-row base pointers so the inner loop indexes once instead
+        // of recomputing three [ch][row][col] addresses per pixel.
+        const double* zrow = frame->distance3D[OUT_Z][y + yMin];
+        const double* xrow = frame->distance3D[OUT_X][y + yMin];
+        const double* yrow = frame->distance3D[OUT_Y][y + yMin];
         for (int x = 0; x < frame->width; ++x) {
-            double zv = frame->distance3D[OUT_Z][y + yMin][x + xMin];
+            const int col = x + xMin;
+            const double zv = zrow[col];
             if (zv >= NSL_LIMIT_FOR_VALID_DATA) continue;
 
-            double lx =  zv / 1000.0;
-            double ly = -frame->distance3D[OUT_X][y + yMin][x + xMin] / 1000.0;
-            double lz = -frame->distance3D[OUT_Y][y + yMin][x + xMin] / 1000.0;
+            const double lx =  zv        / 1000.0;
+            const double ly = -xrow[col] / 1000.0;
+            const double lz = -yrow[col] / 1000.0;
 
-            double cx = Rd[0]*lx + Rd[1]*ly + Rd[2]*lz + td[0];
-            double cy = Rd[3]*lx + Rd[4]*ly + Rd[5]*lz + td[1];
-            double cz = Rd[6]*lx + Rd[7]*ly + Rd[8]*lz + td[2];
+            const double cx = Rd[0]*lx + Rd[1]*ly + Rd[2]*lz + td[0];
+            const double cy = Rd[3]*lx + Rd[4]*ly + Rd[5]*lz + td[1];
+            const double cz = Rd[6]*lx + Rd[7]*ly + Rd[8]*lz + td[2];
             if (cz <= 0.05) continue;
 
             cam_pts.emplace_back(cx, cy, cz);
@@ -724,7 +730,7 @@ void roboscanPublisher::publishCalibratedRgbCloud(
     if (cam_pts.empty()) return;
 
     static thread_local std::vector<cv::Point2d> img_pts;
-    cv::Mat zeros3 = cv::Mat::zeros(3, 1, CV_64F);
+    static const cv::Mat zeros3 = cv::Mat::zeros(3, 1, CV_64F);
     if (calib_.fisheye) {
         // fisheye::projectPoints needs Nx1x3 Mat
         cv::Mat pts3d(static_cast<int>(cam_pts.size()), 1, CV_64FC3,
@@ -734,25 +740,53 @@ void roboscanPublisher::publishCalibratedRgbCloud(
         cv::projectPoints(cam_pts, zeros3, zeros3, calib_.K, calib_.D, img_pts);
     }
 
-    pcl::PointCloud<pcl::PointXYZRGB> cloudRgb;
-    cloudRgb.points.reserve(img_pts.size());
-    cloudRgb.header.frame_id = viewerParam.frame_id;
-    cloudRgb.header.stamp    = pcl_conversions::toPCL(stamp);
+    // Fill PointCloud2 directly — no intermediate pcl::PointCloud and no
+    // pcl::toROSMsg copy. The message buffer is reused across frames, and a
+    // tight 16-byte stride (x,y,z float + packed rgb float) halves the payload
+    // versus PCL's 32-byte PointXYZRGB layout.
+    static thread_local sensor_msgs::msg::PointCloud2 msgRgb;
+    constexpr uint32_t kPointStep = 16;
+    if (msgRgb.fields.empty()) {
+        msgRgb.fields.resize(4);
+        const char* names[4] = {"x", "y", "z", "rgb"};
+        for (int i = 0; i < 4; ++i) {
+            msgRgb.fields[i].name     = names[i];
+            msgRgb.fields[i].offset   = static_cast<uint32_t>(i) * 4u;
+            msgRgb.fields[i].datatype = sensor_msgs::msg::PointField::FLOAT32;
+            msgRgb.fields[i].count    = 1;
+        }
+        msgRgb.is_bigendian = false;
+        msgRgb.point_step   = kPointStep;
+        msgRgb.height       = 1;
+        msgRgb.is_dense     = false;
+    }
 
+    // Upper bound; trimmed to the kept count below (resize-down keeps capacity).
+    msgRgb.data.resize(img_pts.size() * kPointStep);
+    uint8_t* out = msgRgb.data.data();
+    uint32_t n = 0;
     for (size_t i = 0; i < img_pts.size(); ++i) {
-        int u = static_cast<int>(std::round(img_pts[i].x));
-        int v = static_cast<int>(std::round(img_pts[i].y));
+        const int u = static_cast<int>(std::round(img_pts[i].x));
+        const int v = static_cast<int>(std::round(img_pts[i].y));
         if (u < 0 || u >= NSL_RGB_IMAGE_WIDTH || v < 0 || v >= NSL_RGB_IMAGE_HEIGHT) continue;
 
         const cv::Point3f& lp = lidar_pts[i];
-        pcl::PointXYZRGB pt;
-        pt.x = lp.x;
-        pt.y = lp.y;
-        pt.z = lp.z;
-        const cv::Vec3b& bgr = rgb_img.at<cv::Vec3b>(v, u);
-        pt.b = bgr[0]; pt.g = bgr[1]; pt.r = bgr[2];
-        cloudRgb.points.push_back(pt);
+        const cv::Vec3b& bgr = rgb_img.ptr<cv::Vec3b>(v)[u];
+        // Match PCL packing: 0x00RRGGBB stored as a float at the rgb offset.
+        const uint32_t rgb = (static_cast<uint32_t>(bgr[2]) << 16) |
+                             (static_cast<uint32_t>(bgr[1]) <<  8) |
+                              static_cast<uint32_t>(bgr[0]);
+        std::memcpy(out + 0,  &lp.x, 4);
+        std::memcpy(out + 4,  &lp.y, 4);
+        std::memcpy(out + 8,  &lp.z, 4);
+        std::memcpy(out + 12, &rgb,  4);
+        out += kPointStep;
+        ++n;
     }
+
+    msgRgb.width    = n;
+    msgRgb.row_step = kPointStep * n;
+    msgRgb.data.resize(static_cast<size_t>(n) * kPointStep);
 
     auto t1 = std::chrono::steady_clock::now();
     double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
@@ -763,12 +797,6 @@ void roboscanPublisher::publishCalibratedRgbCloud(
             "RGB projection slow: %.1f ms", ms);
     }
 
-    cloudRgb.width    = static_cast<uint32_t>(cloudRgb.points.size());
-    cloudRgb.height   = 1;
-    cloudRgb.is_dense = false;
-
-    sensor_msgs::msg::PointCloud2 msgRgb;
-    pcl::toROSMsg(cloudRgb, msgRgb);
     msgRgb.header.stamp    = stamp;
     msgRgb.header.frame_id = viewerParam.frame_id;
     pointcloudRgbPub->publish(msgRgb);

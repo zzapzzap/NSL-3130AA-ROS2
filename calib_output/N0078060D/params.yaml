@@ -4,12 +4,12 @@ ImageType: RGB_DISTANCE
 LensType: LENS_SF
 LidarAngle: 0
 IsReference: true
-HDRMode: HDR_Temporal
+HDRMode: HDR_None
 IntegrationTime3D: 350
 IntegrationTimeHdr1: 700
 IntegrationTimeHdr2: 80
 IntegrationTimeGray: 100
-MinAmplitude: 2
+MinAmplitude: 15
 Modulation: MOD_12Mhz
 Channel: 0
 MedianFilter: true
