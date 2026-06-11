@@ -36,6 +36,7 @@ Usage (via multiview.launch.py, automatic) or standalone:
 
 import argparse
 import os
+import sys
 from pathlib import Path
 
 import cv2
@@ -45,7 +46,19 @@ from rclpy.node import Node
 from geometry_msgs.msg import TransformStamped
 from tf2_ros import StaticTransformBroadcaster
 
+# detect_camera_id.py lives next to this script; reuse its USB-serial probe so the
+# node can default to the LOCALLY connected camera (priority-1 local-first anchor).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    from detect_camera_id import detect_camera_serial
+except Exception:  # noqa: BLE001 — node still works with explicit --camera-id / --scan-all
+    detect_camera_serial = None
+
 REFERENCE_FRAME = 'stag_marker'
+
+# Sentinel camera filter that matches no device dir → anchor nothing (used when the
+# local serial can't be detected and --scan-all was not requested).
+_NO_LOCAL_SERIAL = '__no_local_serial__'
 
 
 def _rotmat_to_quat(R):
@@ -216,11 +229,34 @@ class MultiviewTfNode(Node):
         return ts
 
 
+def _resolve_camera_filter(args):
+    """Priority-1 (fleet-local) default: anchor ONLY the camera physically connected to
+    THIS machine, so an edge never broadcasts another machine's (possibly stale)
+    multiview.yml. Explicit --camera-id wins; --scan-all restores the legacy
+    "every saved camera" behaviour (offline review on a host)."""
+    if args.camera_id:
+        return args.camera_id
+    if args.scan_all:
+        return ''                                    # every device dir that has a multiview.yml
+    serial = detect_camera_serial() if detect_camera_serial else ''
+    if serial:
+        print(f'[multiview_tf] local camera serial = {serial} → anchoring ONLY this camera '
+              '(pass --scan-all to anchor every saved camera).')
+        return serial
+    print('[multiview_tf] WARNING: no local USB serial detected and --scan-all not set → '
+          'anchoring NOTHING. Pass --camera-id <serial> or --scan-all.')
+    return _NO_LOCAL_SERIAL
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--calib-dir', required=True, help='calib_output directory')
     ap.add_argument('--camera-id', default='',
-                    help='Only anchor this serial; empty = every multiview-calibrated camera')
+                    help='Anchor only this serial. Default (empty) = auto-detect the LOCAL '
+                         'USB serial and anchor just that camera (fleet-local).')
+    ap.add_argument('--scan-all', action='store_true',
+                    help='Anchor EVERY camera that has a multiview.yml (offline review on a host). '
+                         'Without it, an empty --camera-id means local-serial-only.')
     ap.add_argument('--frame-prefix', default='',
                     help='Override saved frame names, e.g. cam_52 -> cam_52_lidar_frame')
     ap.add_argument('--reload-sec', type=float, default=1.0,
@@ -228,8 +264,10 @@ def main():
                          '(online update after a recalibration). <=0 disables.')
     args, ros_args = ap.parse_known_args()
 
+    cam_filter = _resolve_camera_filter(args)
+
     rclpy.init(args=ros_args or None)
-    node = MultiviewTfNode(args.calib_dir, args.camera_id, args.frame_prefix, args.reload_sec)
+    node = MultiviewTfNode(args.calib_dir, cam_filter, args.frame_prefix, args.reload_sec)
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

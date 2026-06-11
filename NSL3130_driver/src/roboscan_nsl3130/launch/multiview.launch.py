@@ -394,8 +394,10 @@ def _viewer_actions(context):
     # publish would duplicate /tf_static (TF_REPEATED_DATA spam).
     if _is_true(context, 'use_multiview_tf'):
         tf_script = os.path.join(_scripts_dir(), 'multiview_tf_node.py')
+        # Offline review on a host: anchor EVERY saved camera (the node now defaults to
+        # local-serial-only, so this path opts back into the scan-all behaviour).
         actions.append(ExecuteProcess(
-            cmd=['python3', tf_script, '--calib-dir', calib_dir], output='screen'))
+            cmd=['python3', tf_script, '--calib-dir', calib_dir, '--scan-all'], output='screen'))
 
     rviz_node = Node(package='rviz2', executable='rviz2', name='multi_sensor_viewer',
                      arguments=['-d', rviz_config], output='screen')
