@@ -157,7 +157,7 @@ source install/setup.bash
 
 ### 2-1. Python 의존성 (멀티뷰 STag 캘리브용, 머신마다 1회)
 
-[4-3 Multiview (STag) 캘리브레이션](#4-3-multiview-stag-캘리브레이션--카메라-간-공유-기준-프레임)은 마커 검출을 위해 `stag-python` 이 필요합니다. **클론한 모든 머신에서 1회** 설치하세요.
+[4-3 Multiview (STag) 캘리브레이션](#4-3-multiview-stag-캘리브레이션--카메라-간-공유-기준-프레임)은 마커 검출을 위해 `stag-python` 이 필요합니다. **`setup/setup_fleet_edge.bash`(`--check` 제외)가 머신마다 1회 자동 설치**하므로 보통 따로 할 일은 없습니다. 수동/오프라인 폴백:
 
 ```bash
 cd ~/colcon_ws/src/NSL-3130AA-ROS2

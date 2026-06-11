@@ -72,6 +72,24 @@ source_ros_setup() {
     fi
 }
 
+ensure_python_deps() {
+    # STag marker detection for the multiview calibration (multiview_calib_node.py).
+    # Idempotent pip --user install; never aborts fleet setup if offline.
+    if python3 -c 'import stag' >/dev/null 2>&1; then
+        printf '[fleet] Python deps OK (stag-python present).\n'
+        return 0
+    fi
+    local req="${repo_root}/requirements.txt"
+    printf '[fleet] Installing Python deps for multiview STag calibration (pip --user) ...\n'
+    if [[ -f "$req" ]]; then
+        python3 -m pip install --user -r "$req" \
+            || printf '[fleet] WARNING: "pip install --user -r %s" failed; install stag-python manually before multiview calibration.\n' "$req" >&2
+    else
+        python3 -m pip install --user stag-python \
+            || printf '[fleet] WARNING: "pip install --user stag-python" failed; install it manually before multiview calibration.\n' >&2
+    fi
+}
+
 ping_once() {
     ping -c 1 -W 1 "$1" >/dev/null 2>&1
 }
@@ -374,6 +392,11 @@ ensure_single_dds_source
 source_ros_setup "${setup_dir}/setup_dds_interface.bash"
 source_ros_setup /opt/ros/humble/setup.bash
 source_ros_setup "${HOME}/colcon_ws/install/setup.bash"
+
+# Python deps for multiview STag calibration (skip in the camera-IP-only mode).
+if [[ "$camera_mode" != "strict" ]]; then
+    ensure_python_deps
+fi
 
 camera_result=0
 if [[ "$camera_mode" != "none" ]]; then
