@@ -31,9 +31,21 @@ import cv2
 import numpy as np
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSHistoryPolicy, QoSReliabilityPolicy
 from sensor_msgs.msg import PointCloud2
+from std_msgs.msg import String
 from geometry_msgs.msg import TransformStamped
 from tf2_ros import StaticTransformBroadcaster
+
+
+# Latched (transient-local) so a consumer that starts later — e.g. multiview_train
+# on another host — still receives the camera serial without the camera node restarting.
+_LATCHED_QOS = QoSProfile(
+    depth=1,
+    history=QoSHistoryPolicy.KEEP_LAST,
+    reliability=QoSReliabilityPolicy.RELIABLE,
+    durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+)
 
 
 def _rotmat_to_quat(R):
@@ -78,10 +90,24 @@ class ExtrinsicTfNode(Node):
         self._bc = StaticTransformBroadcaster(self)
         self._done = False
         self._warned = False
+        # Share the camera serial on /{prefix}/camera_id so any host can map
+        # octet→serial straight from the camera bringup — no singleview node required.
+        self._id_topic = f'/{frame_prefix}/camera_id' if frame_prefix else 'camera_id'
+        self._id_pub = self.create_publisher(String, self._id_topic, _LATCHED_QOS)
+        self._id_published = False
+        if camera_id:
+            self._publish_camera_id(camera_id)
         self._sub = self.create_subscription(PointCloud2, lidar_topic, self._cb, 1)
         self.get_logger().info(
             f'Waiting for {lidar_topic} to read the live LiDAR frame '
             f'(calib_dir={self._calib_dir}) ...')
+
+    def _publish_camera_id(self, serial: str):
+        if self._id_published or not serial:
+            return
+        self._id_pub.publish(String(data=serial))
+        self._id_published = True
+        self.get_logger().info(f'[id] camera serial {serial} → {self._id_topic} (latched)')
 
     def _cb(self, msg: PointCloud2):
         if self._done:
@@ -92,6 +118,8 @@ class ExtrinsicTfNode(Node):
         if not camera_id:
             camera_id = (lidar_frame[:-len('_lidar_frame')]
                          if lidar_frame.endswith('_lidar_frame') else lidar_frame)
+        # camera_id may only be known here (derived from the live LiDAR frame).
+        self._publish_camera_id(camera_id)
 
         yml = self._calib_dir / camera_id / 'extrinsic.yml'
         if not yml.exists():
