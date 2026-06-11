@@ -84,18 +84,44 @@ def _read_Rt(yml_path: Path):
 
 class MultiviewTfNode(Node):
 
-    def __init__(self, calib_dir: str, camera_filter: str, frame_prefix: str):
+    def __init__(self, calib_dir: str, camera_filter: str, frame_prefix: str, reload_sec: float = 1.0):
         super().__init__('multiview_tf_node')
         self.calib_dir = Path(os.path.expanduser(calib_dir))
         self.frame_prefix = frame_prefix.strip().strip('/')
+        self.camera_filter = camera_filter
         self.bc = StaticTransformBroadcaster(self)
+        self._mtimes = {}
         self._publish_all(camera_filter)
+        # Re-publish when a calibration file changes so a fresh multiview_calib
+        # (online, e.g. a fleet /fleet/calibrate) updates /tf_static without a
+        # bringup restart. Static TF re-sends replace the latched value.
+        if reload_sec > 0:
+            self.create_timer(reload_sec, self._poll)
 
     def _device_dirs(self, camera_filter: str):
         if camera_filter:
             d = self.calib_dir / camera_filter
             return [d] if d.is_dir() else []
         return sorted(p for p in self.calib_dir.iterdir() if p.is_dir())
+
+    def _watch_mtimes(self):
+        """mtime of every calib file that feeds the published TF (multiview.yml +
+        extrinsic.yml, per watched device). New/removed files change the dict too."""
+        out = {}
+        for dev in self._device_dirs(self.camera_filter):
+            for name in ('multiview.yml', 'extrinsic.yml'):
+                f = dev / name
+                try:
+                    out[str(f)] = f.stat().st_mtime
+                except OSError:
+                    pass
+        return out
+
+    def _poll(self):
+        cur = self._watch_mtimes()
+        if cur != self._mtimes:
+            self.get_logger().info('[multiview_tf] calibration changed → re-publishing TF.')
+            self._publish_all(self.camera_filter)
 
     def _publish_all(self, camera_filter: str):
         transforms = []
@@ -156,6 +182,7 @@ class MultiviewTfNode(Node):
 
         if transforms:
             self.bc.sendTransform(transforms)
+        self._mtimes = self._watch_mtimes()   # snapshot for change detection
 
         for serial, child, t_, via_lidar in accepted:
             note = '' if via_lidar else '  (no extrinsic.yml → point cloud not anchored)'
@@ -196,10 +223,13 @@ def main():
                     help='Only anchor this serial; empty = every multiview-calibrated camera')
     ap.add_argument('--frame-prefix', default='',
                     help='Override saved frame names, e.g. cam_52 -> cam_52_lidar_frame')
+    ap.add_argument('--reload-sec', type=float, default=1.0,
+                    help='Poll the calib files every N s and re-publish TF when they change '
+                         '(online update after a recalibration). <=0 disables.')
     args, ros_args = ap.parse_known_args()
 
     rclpy.init(args=ros_args or None)
-    node = MultiviewTfNode(args.calib_dir, args.camera_id, args.frame_prefix)
+    node = MultiviewTfNode(args.calib_dir, args.camera_id, args.frame_prefix, args.reload_sec)
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

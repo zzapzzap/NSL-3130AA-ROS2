@@ -443,6 +443,7 @@ ros2 launch roboscan_nsl3130 multiview.launch.py calibration:=True is_host:=true
 **절차 (기본 = 원터치)**: 마커가 RGB 화면에 보이게 둔 뒤 실행만 하면 됩니다. **기준 마커가 잡히면 `num_frames`(기본 10) 뷰**를 모아 **중앙값(median)** 으로 평균낸 뒤 LiDAR-RANSAC 깊이 보정까지 적용해 `multiview.yml` 에 자동 저장합니다(몇 초). (`min_frames`(기본 5) 이상 모여야 저장)
 
 - **fleet 원터치 (`is_host:=true`)**: 각 카메라 머신이 평소 `camera.launch.py`(기본 `calib_listener:=true`)로 idle 리스너를 띄워두면, Host가 `/fleet/calibrate`를 브로드캐스트해 **모든 카메라가 동시에 자기 카메라를 캘리브**하고 각자 `multiview.yml`을 저장합니다(`/tf_static` 공유). 같은 `ROS_DOMAIN_ID`면 되고 계정/SSH 불필요. (저장 직후 쿨다운으로 한 번의 브로드캐스트는 1회 캘리브로 처리)
+- **온라인 TF 갱신**: `camera.launch.py`의 `multiview_tf_node` 가 `multiview.yml`/`extrinsic.yml` 변경을 1초 주기로 감지해 **재기동 없이 `stag_marker → {ns}_lidar_frame` TF를 즉시 다시 발행**합니다. 캘리브하면 바로 RViz/도메인에 반영됩니다. (이 기능을 받으려면 **각 머신에서 1회 rebuild + camera.launch.py 재기동** 필요. 그리고 같은 머신에서 `multiview.launch.py use_multiview_tf:=true` 를 동시에 켜지 마세요 — 같은 TF를 두 곳에서 쏘면 값이 충돌·튑니다.)
 - **`use_gui:=true`**: 검출되는 걸 라이브 창으로 확인(검출 + 좌표축 + `[뷰수/시간]` HUD). 창을 띄워도 조건 충족 시 자동 저장됩니다. **`s`**=즉시저장 · **`r`**=초기화 · **`q`**=취소.
 - **`duration:=N`** 으로 두면 개수 대신 N초 시간 기반 수집으로 바뀝니다.
 - **정확도 팁**: 마커를 **1~1.5 m** 로 가까이 두고(멀수록 자세 오차가 커집니다), `marker_size` 는 실측값으로 넣으세요.
