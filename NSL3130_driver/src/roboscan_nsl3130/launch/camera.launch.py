@@ -295,6 +295,22 @@ def generate_launch_description():
                 cmd += ['--frame-prefix', ns]
             actions.append(ExecuteProcess(cmd=cmd, output='screen'))
 
+        # Idle multiview-calibration listener: waits for /fleet/calibrate (a host
+        # broadcast) and then calibrates THIS camera headless, saving its own
+        # calib_output/{serial}/multiview.yml. Lets a host one-touch the whole fleet
+        # with no SSH/accounts. Needs the per-device intrinsic.yml (logs+exits if absent).
+        if serial and _is_true(context, 'calib_listener'):
+            calib_node = os.path.join(repo_scripts, 'multiview_calib_node.py')
+            img_topic = _abs_topic(ns, LaunchConfiguration('rgb_topic').perform(context))
+            actions.append(ExecuteProcess(
+                cmd=['python3', calib_node,
+                     '--camera-id',     serial,
+                     '--calib-dir',     calib_dir,
+                     '--image-topic',   img_topic,
+                     '--wait-trigger',  'true',
+                     '--trigger-topic', LaunchConfiguration('trigger_topic').perform(context)],
+                output='screen'))
+
         # rviz2 (config rewritten for the namespace so the bundled view still works)
         if _use_gui(context, 'use_rviz'):
             actions.append(Node(
@@ -333,6 +349,13 @@ def generate_launch_description():
             'use_multiview_tf', default_value='true',
             description='Publish stag_marker→{lidar_frame} TF from the saved multiview.yml '
                         '(STag shared reference; warns and skips if not yet calibrated)'),
+        DeclareLaunchArgument(
+            'calib_listener', default_value='true',
+            description='Run an idle multiview-calibration listener that calibrates this camera on a '
+                        'host /fleet/calibrate broadcast (one-touch fleet calib). Needs intrinsic.yml.'),
+        DeclareLaunchArgument(
+            'trigger_topic', default_value='/fleet/calibrate',
+            description='Topic the host broadcasts std_msgs/Empty on to trigger fleet calibration.'),
         DeclareLaunchArgument(
             'connection', default_value='ethernet',
             description="'ethernet'=strict fleet runtime path with no USB fallback (DEFAULT); "

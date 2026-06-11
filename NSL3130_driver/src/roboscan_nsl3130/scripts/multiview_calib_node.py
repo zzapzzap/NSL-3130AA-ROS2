@@ -37,6 +37,7 @@ import argparse
 import datetime
 import os
 import sys
+import time
 from collections import deque
 from pathlib import Path
 
@@ -45,6 +46,7 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image, PointCloud2
+from std_msgs.msg import Empty
 
 try:
     import stag
@@ -184,7 +186,13 @@ def _size_of(tag_id):
 class MultiviewCalibNode(Node):
 
     def __init__(self, args):
-        super().__init__('multiview_calib_node')
+        # Distinct name in trigger/idle mode so it never clashes with a direct
+        # `calibration:=true` instance on the same machine.
+        if args.wait_trigger:
+            node_name = f'multiview_calib_listener_{args.camera_id}' if args.camera_id else 'multiview_calib_listener'
+        else:
+            node_name = 'multiview_calib_node'
+        super().__init__(node_name)
         self.a = args
         self.bridge = CvBridge() if CvBridge is not None else None
 
@@ -225,15 +233,28 @@ class MultiviewCalibNode(Node):
         self.saved = False
         self.frame_count = 0
         self.last_save_dbg = -1
+        self._collect_start = None   # monotonic time the reference tag was first seen (duration mode)
+
+        # Fleet trigger: in wait-trigger mode the node idles (armed=False) and only
+        # collects after an Empty message lands on trigger_topic (host broadcast),
+        # re-arming after each save. In direct mode it is armed from the start.
+        self.armed = not args.wait_trigger
+        if args.wait_trigger:
+            self.create_subscription(Empty, args.trigger_topic, self._on_trigger, 10)
 
         self.sub = self.create_subscription(Image, args.image_topic, self._cb, 1)
+        if args.wait_trigger:
+            self.get_logger().info(
+                f'[fleet] idle — waiting for {args.trigger_topic} '
+                f'(then headless {args.duration:.0f}s median calib for {self.serial}).')
         self.get_logger().info(
             f'[multiview_calib] serial={self.serial}  topic={args.image_topic}\n'
             f'  HD{args.library_hd}  multi-tag (id {REF_ID}=0.32 m REFERENCE, others=0.19 m aux)\n'
             f'  intrinsics: {"fisheye/equidistant" if self.fisheye else "pinhole"}  '
             f'{self.w}x{self.h}\n'
-            f'  collecting {args.num_frames} good views → {self.dev_dir/"multiview.yml"}\n'
-            f'  display={"on — [s]save [r]reset [q]quit (you decide)" if args.display else "off (headless auto-save)"}')
+            f'  {f"collecting {args.duration:.0f}s then median-average" if args.duration > 0 else f"collecting {args.num_frames} good views"} '
+            f'→ {self.dev_dir/"multiview.yml"}\n'
+            f'  display={"on — viewer + [s]save [r]reset [q]quit" if args.display else "off (headless one-touch)"}')
 
     # ---- setup ----------------------------------------------------------------
 
@@ -296,8 +317,25 @@ class MultiviewCalibNode(Node):
         rmse = float(np.sqrt(np.mean(np.sum((proj.reshape(-1, 2) - und) ** 2, axis=1))))
         return rvec, tvec, rmse
 
+    def _on_trigger(self, _msg: Empty):
+        if self.armed:
+            self.get_logger().info('[fleet] trigger received but already calibrating; ignoring.')
+            return
+        self._rearm(idle=False)
+        self.get_logger().info(
+            f'[fleet] trigger received → collecting {self.a.duration:.0f}s for {self.serial} ...')
+
+    def _rearm(self, idle: bool):
+        """Reset collection state. idle=True → back to waiting for the next trigger."""
+        self.tags.clear()
+        self._clouds.clear()
+        self._collect_start = None
+        self.last_save_dbg = -1
+        self.saved = False
+        self.armed = not idle
+
     def _cb(self, msg: Image):
-        if self.saved:
+        if self.saved or not self.armed:
             return
         self.frame_count += 1
         try:
@@ -324,8 +362,9 @@ class MultiviewCalibNode(Node):
                 rvec, tvec, rmse = res
                 if rmse <= self.a.reproj_thresh:
                     tag = self.tags.setdefault(mid, {'rv': [], 'tv': [], 'err': []})
-                    # cap each tag at num_frames; keep streaming once full
-                    if len(tag['rv']) < self.a.num_frames:
+                    # count-mode caps each tag at num_frames; duration-mode keeps every
+                    # view in the time window so the median averages over all of them.
+                    if self.a.duration > 0 or len(tag['rv']) < self.a.num_frames:
                         tag['rv'].append(rvec.reshape(3))
                         tag['tv'].append(tvec.reshape(3))
                         tag['err'].append(rmse)
@@ -336,7 +375,23 @@ class MultiviewCalibNode(Node):
         self._maybe_dump_debug(dbg)
 
         if self.a.display:
-            self._show(dbg)          # interactive: user decides with [s]/[r]/[q]
+            self._show(dbg)          # viewer + [s]save [r]reset [q]quit (early/abort)
+
+        # Auto-finish works in both modes (display just adds the viewer):
+        #   duration>0 → median-average once the time window elapses (one-touch);
+        #   duration<=0 → legacy count-based stop at --num-frames.
+        if self.saved:
+            return
+        if self.a.duration > 0:
+            if self._ref_count() >= 1 and self._collect_start is None:
+                self._collect_start = time.monotonic()
+                self.get_logger().info(
+                    f'[collect] reference tag acquired — averaging over {self.a.duration:.0f}s ...')
+            if (self._collect_start is not None
+                    and (time.monotonic() - self._collect_start) >= self.a.duration
+                    and self._ref_count() >= self.a.min_frames):
+                self._finish(f'{self.a.duration:.0f}s window elapsed '
+                             f'(median of {self._ref_count()} reference views)')
         elif self._ref_count() >= self.a.num_frames:
             self._finish('collected enough views (headless auto)')
 
@@ -456,15 +511,20 @@ class MultiviewCalibNode(Node):
             n = len(self.tags[mid]['rv'])
             tag = 'REF' if mid == REF_ID else 'aux'
             col = (0, 255, 0) if mid == REF_ID else (0, 200, 255)
-            cv2.putText(dbg, f'id={mid}[{tag}] {n}/{self.a.num_frames}  {_size_of(mid):.2f}m',
+            count = f'{n}' if self.a.duration > 0 else f'{n}/{self.a.num_frames}'
+            cv2.putText(dbg, f'id={mid}[{tag}] {count}  {_size_of(mid):.2f}m',
                         (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, col, 2)
             y += 28
 
     def _hud(self, dbg):
         rid = self._ref_id()
         n = self._ref_count()
-        full = ' (full)' if n >= self.a.num_frames else ''
-        line = f'ref=id{rid} {n}/{self.a.num_frames}{full}  tags={sorted(self.tags)}'
+        if self.a.duration > 0:
+            elapsed = (time.monotonic() - self._collect_start) if self._collect_start is not None else 0.0
+            line = f'ref=id{rid} {n} views  [{elapsed:.0f}/{self.a.duration:.0f}s]  tags={sorted(self.tags)}'
+        else:
+            full = ' (full)' if n >= self.a.num_frames else ''
+            line = f'ref=id{rid} {n}/{self.a.num_frames}{full}  tags={sorted(self.tags)}'
         if self.a.display:
             line += ('   [s]save [r]reset [q]quit' if n >= self.a.min_frames
                      else f'   (need >={self.a.min_frames} on ref)')
@@ -537,14 +597,19 @@ class MultiviewCalibNode(Node):
                  if ok else f'depth-refine: {ref["status"] if ref else "off"}'))
 
         self._save(rid, results)
-        self.get_logger().info(f'[multiview_calib] saved ({reason}); shutting down.')
         self.saved = True
         if self.a.display:
             try:
                 cv2.destroyAllWindows()
             except cv2.error:
                 pass
-        rclpy.shutdown()
+        if self.a.wait_trigger:
+            self.get_logger().info(
+                f'[multiview_calib] saved ({reason}); re-armed — waiting for next {self.a.trigger_topic}.')
+            self._rearm(idle=True)
+        else:
+            self.get_logger().info(f'[multiview_calib] saved ({reason}); shutting down.')
+            rclpy.shutdown()
 
     def _save(self, rid, results):
         ns, camera_frame, lidar_frame = self._resolve_frames()
@@ -620,13 +685,23 @@ def main():
     ap.add_argument('--marker-id', type=int, default=-1,
                     help='Reference marker id; -1 = lowest visible id')
     ap.add_argument('--num-frames', type=int, default=30,
-                    help='Good views to collect before averaging+saving')
+                    help='Count-based mode (--duration<=0): good views to collect before averaging+saving')
+    ap.add_argument('--duration', type=float, default=30.0,
+                    help='Time-based mode (default): from the first reference view, keep collecting for '
+                         'this many seconds, then median-average + save automatically. <=0 = count-based.')
     ap.add_argument('--min-frames', type=int, default=5,
-                    help='Minimum good views required to save on demand')
+                    help='Minimum good views on the reference tag required to save')
     ap.add_argument('--reproj-thresh', type=float, default=3.0,
                     help='Max per-view reprojection RMSE (px) to accept a view')
-    ap.add_argument('--display', default='true',
-                    help='Show live detection window (true/false)')
+    ap.add_argument('--display', default='false',
+                    help='Show live detection window (true/false). Default false (headless one-touch); '
+                         'true just adds a viewer — it still auto-saves after --duration.')
+    ap.add_argument('--wait-trigger', default='false',
+                    help='Fleet mode: idle until an std_msgs/Empty lands on --trigger-topic, then run one '
+                         'headless calib window and re-arm. Lets a host calibrate every camera with one '
+                         'broadcast — no SSH/accounts. Default false (calibrate immediately).')
+    ap.add_argument('--trigger-topic', default='/fleet/calibrate',
+                    help='Topic the host broadcasts std_msgs/Empty on to start fleet calibration.')
     ap.add_argument('--depth-refine', default='true',
                     help='Snap marker depth onto the LiDAR plane via RANSAC (true/false)')
     ap.add_argument('--depth-band', type=float, default=0.20,
@@ -637,6 +712,7 @@ def main():
     args, ros_args = ap.parse_known_args()
     args.display = str(args.display).strip().lower() in ('true', '1', 'yes')
     args.depth_refine = str(args.depth_refine).strip().lower() in ('true', '1', 'yes')
+    args.wait_trigger = str(args.wait_trigger).strip().lower() in ('true', '1', 'yes')
 
     rclpy.init(args=ros_args or None)
     try:
@@ -650,9 +726,9 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        # Headless auto-saves on exit if enough views; with a display, saving is
-        # explicit ([s]) — quitting ([q] / Ctrl-C) must NOT save.
-        if (not node.saved and not node.a.display
+        # Headless direct mode auto-saves on exit if enough views; with a display,
+        # saving is explicit ([s]); trigger/idle mode never saves on Ctrl-C.
+        if (not node.saved and not node.a.display and not node.a.wait_trigger
                 and node._ref_count() >= args.min_frames):
             node._finish('shutdown auto-save (headless)')
         node.destroy_node()

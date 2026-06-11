@@ -9,11 +9,12 @@ Single multiview entry point (viewer + calibration in one launch file).
         Override with  cameras:=56,57 .
 
   ros2 launch roboscan_nsl3130 multiview.launch.py calibration:=True
-      → CALIBRATION only: JUST the STag detection GUI (the cv2 window), NO RViz.
-        Multi-tag: id 7 = 0.32 m REFERENCE/origin, all other ids = 0.19 m
-        auxiliaries; each tag gets a per-tag LiDAR-RANSAC depth refine. Saves
-        calib_output/{serial}/multiview.yml.
-      e.g.  calibration:=True display:=false num_frames:=40
+      → CALIBRATION only (headless one-touch, NO RViz): collect ~30 s of STag
+        detections from the first reference view, then median-average the pose
+        (id 7 = 0.32 m REFERENCE/origin, other ids = 0.19 m auxiliaries; each tag
+        gets a LiDAR-RANSAC depth refine) and save calib_output/{serial}/multiview.yml.
+      add use_gui:=true to watch detection live ([s]save [r]reset [q]quit).
+      e.g.  calibration:=True use_gui:=true duration:=20
 
 Viewer layout choices: the Displays (topic/status) panel sits on TOP of the left
 column with the per-camera RGB image panels stacked below it (Time at the bottom);
@@ -84,7 +85,24 @@ def _detect_ip_octet():
 
 
 def _calib_actions(context):
-    """Run JUST the multiview calibration node (+ its cv2 GUI). No RViz."""
+    """calibration:=true.
+
+    is_host:=true  → broadcast ONE std_msgs/Empty on /fleet/calibrate so every edge
+                     running an idle calib listener (camera.launch.py calib_listener:=true)
+                     calibrates its own camera locally and saves its own multiview.yml.
+                     No SSH/accounts: the trigger rides the shared DDS domain.
+    is_host:=false → run the local calibration node on THIS machine's camera.
+    """
+    trigger_topic = LaunchConfiguration('trigger_topic').perform(context).strip() or '/fleet/calibrate'
+    if _is_true(context, 'is_host'):
+        print(f'[multiview] is_host → broadcasting {trigger_topic} to the fleet '
+              '(each edge calibrates locally).')
+        # publish a few times so every edge is discovered; edges ignore repeats while armed.
+        return [ExecuteProcess(
+            cmd=['ros2', 'topic', 'pub', '-t', '5', '-r', '2',
+                 trigger_topic, 'std_msgs/msg/Empty', '{}'],
+            output='screen')]
+
     scripts_dir = _scripts_dir()
     detect      = os.path.join(scripts_dir, 'detect_camera_id.py')
     node_script = os.path.join(scripts_dir, 'multiview_calib_node.py')
@@ -112,8 +130,9 @@ def _calib_actions(context):
              '--image-topic',   image_topic,
              '--library-hd',    LaunchConfiguration('library_hd').perform(context),
              '--num-frames',    LaunchConfiguration('num_frames').perform(context),
+             '--duration',      LaunchConfiguration('duration').perform(context),
              '--reproj-thresh', LaunchConfiguration('reproj_thresh').perform(context),
-             '--display',       LaunchConfiguration('display').perform(context),
+             '--display',       LaunchConfiguration('use_gui').perform(context),
              '--depth-refine',  LaunchConfiguration('depth_refine').perform(context),
              '--depth-band',    LaunchConfiguration('depth_band').perform(context),
              '--ransac-tol',    LaunchConfiguration('ransac_tol').perform(context)],
@@ -397,8 +416,13 @@ def _setup(context):
 def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('calibration', default_value='false',
-            description='true → run ONLY the STag calibration GUI (no RViz); '
+            description='true → STag calibration (headless one-touch, no RViz); '
                         'false (default) → the RViz multiview viewer'),
+        DeclareLaunchArgument('is_host', default_value='false',
+            description='With calibration:=true, broadcast /fleet/calibrate so every edge '
+                        '(calib_listener) calibrates its own camera at once. false = calibrate this machine.'),
+        DeclareLaunchArgument('trigger_topic', default_value='/fleet/calibrate',
+            description='Topic the host broadcasts std_msgs/Empty on to start fleet calibration.'),
 
         # ── viewer options (calibration:=false) ──
         DeclareLaunchArgument('cameras', default_value='',
@@ -419,12 +443,16 @@ def generate_launch_description():
             description="'auto' → /cam_{ip_octet}/camera/rgb/image_raw; or an explicit topic"),
         DeclareLaunchArgument('library_hd', default_value='21',
             description='STag HD library [11,13,15,17,19,21,23]'),
+        DeclareLaunchArgument('duration', default_value='30',
+            description='One-touch: collect for this many seconds (from the first reference view), '
+                        'then median-average + save automatically. <=0 = count-based (num_frames).'),
         DeclareLaunchArgument('num_frames', default_value='30',
-            description='Good views per tag before averaging+saving'),
+            description='Count-based fallback (duration<=0): good views per tag before averaging'),
         DeclareLaunchArgument('reproj_thresh', default_value='3.0',
             description='Max per-view reprojection RMSE (px) to accept a view'),
-        DeclareLaunchArgument('display', default_value='true',
-            description='Show live detection window — [s]save [r]reset [q]quit; false = headless'),
+        DeclareLaunchArgument('use_gui', default_value='false',
+            description='Show the live detection window (default false = headless one-touch). '
+                        'true just adds the viewer + [s]save [r]reset [q]quit; it still auto-saves after duration.'),
         DeclareLaunchArgument('depth_refine', default_value='true',
             description='Per-tag LiDAR-plane RANSAC depth refine (needs extrinsic.yml)'),
         DeclareLaunchArgument('depth_band', default_value='0.20',
