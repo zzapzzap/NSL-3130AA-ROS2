@@ -9,12 +9,12 @@ Single multiview entry point (viewer + calibration in one launch file).
         Override with  cameras:=56,57 .
 
   ros2 launch roboscan_nsl3130 multiview.launch.py calibration:=True
-      → CALIBRATION only (headless one-touch, NO RViz): collect ~30 s of STag
-        detections from the first reference view, then median-average the pose
-        (id 7 = 0.32 m REFERENCE/origin, other ids = 0.19 m auxiliaries; each tag
-        gets a LiDAR-RANSAC depth refine) and save calib_output/{serial}/multiview.yml.
-      add use_gui:=true to watch detection live ([s]save [r]reset [q]quit).
-      e.g.  calibration:=True use_gui:=true duration:=20
+      → CALIBRATION only (headless one-touch, NO RViz): collect ~10 STag views
+        (num_frames) then median-average the pose (id 7 = 0.32 m REFERENCE/origin,
+        other ids = 0.19 m auxiliaries; each tag gets a LiDAR-RANSAC depth refine)
+        and save calib_output/{serial}/multiview.yml. ~couple of seconds.
+      add use_gui:=true to watch detection live ([s]save [r]reset [q]quit);
+      duration:=N for a time-based window instead of a fixed count.
 
 Viewer layout choices: the Displays (topic/status) panel sits on TOP of the left
 column with the per-camera RGB image panels stacked below it (Time at the bottom);
@@ -443,11 +443,11 @@ def generate_launch_description():
             description="'auto' → /cam_{ip_octet}/camera/rgb/image_raw; or an explicit topic"),
         DeclareLaunchArgument('library_hd', default_value='21',
             description='STag HD library [11,13,15,17,19,21,23]'),
-        DeclareLaunchArgument('duration', default_value='30',
-            description='One-touch: collect for this many seconds (from the first reference view), '
-                        'then median-average + save automatically. <=0 = count-based (num_frames).'),
-        DeclareLaunchArgument('num_frames', default_value='30',
-            description='Count-based fallback (duration<=0): good views per tag before averaging'),
+        DeclareLaunchArgument('num_frames', default_value='10',
+            description='One-touch (default): collect this many good reference views, then '
+                        'median-average + LiDAR depth-refine + save. ~10 is plenty.'),
+        DeclareLaunchArgument('duration', default_value='0',
+            description='Optional time-based collection (seconds). 0 (default) = count-based (num_frames).'),
         DeclareLaunchArgument('reproj_thresh', default_value='3.0',
             description='Max per-view reprojection RMSE (px) to accept a view'),
         DeclareLaunchArgument('use_gui', default_value='false',

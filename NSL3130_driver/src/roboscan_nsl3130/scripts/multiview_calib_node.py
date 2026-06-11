@@ -234,6 +234,7 @@ class MultiviewCalibNode(Node):
         self.frame_count = 0
         self.last_save_dbg = -1
         self._collect_start = None   # monotonic time the reference tag was first seen (duration mode)
+        self._last_save_time = None  # monotonic time of the last save (fleet trigger cooldown)
 
         # Fleet trigger: in wait-trigger mode the node idles (armed=False) and only
         # collects after an Empty message lands on trigger_topic (host broadcast),
@@ -244,9 +245,10 @@ class MultiviewCalibNode(Node):
 
         self.sub = self.create_subscription(Image, args.image_topic, self._cb, 1)
         if args.wait_trigger:
+            mode = f'{args.duration:.0f}s window' if args.duration > 0 else f'{args.num_frames}-view'
             self.get_logger().info(
                 f'[fleet] idle — waiting for {args.trigger_topic} '
-                f'(then headless {args.duration:.0f}s median calib for {self.serial}).')
+                f'(then headless {mode} median calib for {self.serial}).')
         self.get_logger().info(
             f'[multiview_calib] serial={self.serial}  topic={args.image_topic}\n'
             f'  HD{args.library_hd}  multi-tag (id {REF_ID}=0.32 m REFERENCE, others=0.19 m aux)\n'
@@ -318,12 +320,17 @@ class MultiviewCalibNode(Node):
         return rvec, tvec, rmse
 
     def _on_trigger(self, _msg: Empty):
+        # A host broadcasts a short burst (a few Empty msgs) for DDS-discovery
+        # robustness; collapse the burst into ONE calibration: ignore while armed,
+        # and for a cooldown after the last save.
         if self.armed:
-            self.get_logger().info('[fleet] trigger received but already calibrating; ignoring.')
+            return
+        now = time.monotonic()
+        if self._last_save_time is not None and (now - self._last_save_time) < self.a.trigger_cooldown:
             return
         self._rearm(idle=False)
-        self.get_logger().info(
-            f'[fleet] trigger received → collecting {self.a.duration:.0f}s for {self.serial} ...')
+        mode = f'{self.a.duration:.0f}s' if self.a.duration > 0 else f'{self.a.num_frames} views'
+        self.get_logger().info(f'[fleet] trigger received → collecting {mode} for {self.serial} ...')
 
     def _rearm(self, idle: bool):
         """Reset collection state. idle=True → back to waiting for the next trigger."""
@@ -604,6 +611,7 @@ class MultiviewCalibNode(Node):
             except cv2.error:
                 pass
         if self.a.wait_trigger:
+            self._last_save_time = time.monotonic()
             self.get_logger().info(
                 f'[multiview_calib] saved ({reason}); re-armed — waiting for next {self.a.trigger_topic}.')
             self._rearm(idle=True)
@@ -684,13 +692,17 @@ def main():
                     help='Marker side length in metres (outer black border)')
     ap.add_argument('--marker-id', type=int, default=-1,
                     help='Reference marker id; -1 = lowest visible id')
-    ap.add_argument('--num-frames', type=int, default=30,
-                    help='Count-based mode (--duration<=0): good views to collect before averaging+saving')
-    ap.add_argument('--duration', type=float, default=30.0,
-                    help='Time-based mode (default): from the first reference view, keep collecting for '
-                         'this many seconds, then median-average + save automatically. <=0 = count-based.')
+    ap.add_argument('--num-frames', type=int, default=10,
+                    help='Default (count-based): collect this many good reference views, then '
+                         'median-average + LiDAR depth-refine + save. ~10 is plenty (STag pose is stable).')
+    ap.add_argument('--duration', type=float, default=0.0,
+                    help='Optional time-based mode: if >0, collect for this many seconds from the first '
+                         'reference view instead of a fixed count. Default 0 = count-based (--num-frames).')
     ap.add_argument('--min-frames', type=int, default=5,
                     help='Minimum good views on the reference tag required to save')
+    ap.add_argument('--trigger-cooldown', type=float, default=5.0,
+                    help='Fleet mode: ignore further triggers for this many seconds after a save, so one '
+                         'host broadcast burst (a few Empty msgs) counts as a single calibration.')
     ap.add_argument('--reproj-thresh', type=float, default=3.0,
                     help='Max per-view reprojection RMSE (px) to accept a view')
     ap.add_argument('--display', default='false',

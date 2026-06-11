@@ -430,18 +430,21 @@ ros2 run tf2_ros tf2_echo {ns}_lidar_frame {ns}_camera_frame   # 예: cam_51_lid
 
 ```bash
 cd ~/colcon_ws
-# 카메라 자기 머신에서 실행 (USB 시리얼 자동 감지 → 출력 폴더, 토픽은 /cam_{번호}/camera/rgb/image_raw)
-ros2 launch roboscan_nsl3130 multiview.launch.py calibration:=True                    # 원터치: 헤드리스 30초 자동
-ros2 launch roboscan_nsl3130 multiview.launch.py calibration:=True use_gui:=true      # 검출 화면 보면서 (그래도 30초 뒤 자동 저장)
-ros2 launch roboscan_nsl3130 multiview.launch.py calibration:=True duration:=20       # 수집 시간 조절
-ros2 launch roboscan_nsl3130 multiview.launch.py calibration:=True duration:=0 num_frames:=40   # 옛 방식(개수 기반)
+# (A) 단일 머신 — 카메라 자기 머신에서 실행 (USB 시리얼 자동 감지 → 출력 폴더)
+ros2 launch roboscan_nsl3130 multiview.launch.py calibration:=True                 # 원터치: ~10뷰 모아 median, 몇 초면 끝
+ros2 launch roboscan_nsl3130 multiview.launch.py calibration:=True use_gui:=true   # 검출 화면 보면서 ([s]즉시저장 [r]초기화 [q]취소)
+ros2 launch roboscan_nsl3130 multiview.launch.py calibration:=True num_frames:=20  # 더 많이 모으고 싶으면
+ros2 launch roboscan_nsl3130 multiview.launch.py calibration:=True duration:=10    # (선택) 개수 대신 시간 기반
+
+# (B) 한 번에 fleet 전체 — Host에서 한 발이면 떠 있는 모든 카메라가 각자 자기 것을 캘리브 (SSH 불필요)
+ros2 launch roboscan_nsl3130 multiview.launch.py calibration:=True is_host:=true
 ```
 
-**절차 (기본 = 원터치)**: 마커가 RGB 화면에 보이게 둔 뒤 실행만 하면 됩니다. **기준 마커가 처음 잡힌 순간부터 `duration`(기본 30초)** 동안 검출 자세를 모으고, **중앙값(median)** 으로 평균낸 뒤 LiDAR-RANSAC 깊이 보정까지 적용해 `multiview.yml` 에 자동 저장합니다. (`min_frames`(기본 5) 이상 모여야 저장)
+**절차 (기본 = 원터치)**: 마커가 RGB 화면에 보이게 둔 뒤 실행만 하면 됩니다. **기준 마커가 잡히면 `num_frames`(기본 10) 뷰**를 모아 **중앙값(median)** 으로 평균낸 뒤 LiDAR-RANSAC 깊이 보정까지 적용해 `multiview.yml` 에 자동 저장합니다(몇 초). (`min_frames`(기본 5) 이상 모여야 저장)
 
-- **`use_gui:=true`**: 검출되는 걸 라이브 창으로 확인(검출 + 좌표축 + `[경과/총 초]` HUD). 창을 띄워도 `duration` 뒤 자동 저장됩니다.
-  - **`s`** = 지금까지 모은 뷰로 즉시 저장하고 종료 · **`r`** = 초기화(재조준) · **`q`** = 저장 없이 종료
-- **`duration:=0`** 으로 두면 옛 개수 기반(`num_frames`, 기본 30뷰) 동작으로 돌아갑니다.
+- **fleet 원터치 (`is_host:=true`)**: 각 카메라 머신이 평소 `camera.launch.py`(기본 `calib_listener:=true`)로 idle 리스너를 띄워두면, Host가 `/fleet/calibrate`를 브로드캐스트해 **모든 카메라가 동시에 자기 카메라를 캘리브**하고 각자 `multiview.yml`을 저장합니다(`/tf_static` 공유). 같은 `ROS_DOMAIN_ID`면 되고 계정/SSH 불필요. (저장 직후 쿨다운으로 한 번의 브로드캐스트는 1회 캘리브로 처리)
+- **`use_gui:=true`**: 검출되는 걸 라이브 창으로 확인(검출 + 좌표축 + `[뷰수/시간]` HUD). 창을 띄워도 조건 충족 시 자동 저장됩니다. **`s`**=즉시저장 · **`r`**=초기화 · **`q`**=취소.
+- **`duration:=N`** 으로 두면 개수 대신 N초 시간 기반 수집으로 바뀝니다.
 - **정확도 팁**: 마커를 **1~1.5 m** 로 가까이 두고(멀수록 자세 오차가 커집니다), `marker_size` 는 실측값으로 넣으세요.
 
 **Multiview 검출 예시**
