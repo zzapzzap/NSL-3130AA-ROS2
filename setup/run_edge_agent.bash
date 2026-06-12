@@ -20,6 +20,70 @@ elif [[ -f "${nsl_src}/setup/setup_dds_interface.bash" ]]; then
 fi
 set -u
 
+detect_edge_octet() {
+    local octet="${ROS_HUMANPOSE_OCTET:-${NSL_EDGE_OCTET:-}}"
+    if [[ -z "$octet" ]]; then
+        octet="$(ip -4 -o addr show 2>/dev/null | grep -oE '192\.168\.0\.[0-9]+' | head -n1 | awk -F. '{print $4}' || true)"
+    fi
+    printf '%s\n' "$octet"
+}
+
+wait_for_edge_lan() {
+    local octet="$1"
+    local timeout="${NSL_EDGE_LAN_WAIT_SEC:-30}"
+    local elapsed=0
+    local pattern='192\.168\.0\.'
+    [[ -n "$octet" ]] && pattern="192\\.168\\.0\\.${octet}"
+
+    while (( elapsed < timeout )); do
+        if ip -4 -o addr show 2>/dev/null | grep -qE "$pattern"; then
+            return 0
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    echo "[edge-agent] WARNING: Edge/Host network 192.168.0.${octet:-x} not ready after ${timeout}s"
+    return 1
+}
+
+wait_for_camera_ip() {
+    local octet="$1"
+    local timeout="${NSL_CAMERA_WAIT_SEC:-45}"
+    local elapsed=0
+    local camera_ip="${NSL_CAMERA_IP:-}"
+
+    if [[ -z "$camera_ip" || "${camera_ip,,}" == "auto" ]]; then
+        [[ "$octet" =~ ^[0-9]+$ ]] || return 0
+        camera_ip="192.168.2.$((octet + 150))"
+    fi
+
+    while (( elapsed < timeout )); do
+        if ping -c 1 -W 1 "$camera_ip" >/dev/null 2>&1; then
+            echo "[edge-agent] camera reachable: ${camera_ip}"
+            return 0
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+
+    echo "[edge-agent] camera ${camera_ip} not reachable after ${timeout}s"
+    [[ "${NSL_EDGE_REQUIRE_CAMERA:-1}" =~ ^(1|true|yes)$ ]] && return 1
+    return 0
+}
+
+edge_octet="$(detect_edge_octet)"
+if [[ -n "$edge_octet" ]]; then
+    export NSL_EDGE_OCTET="$edge_octet"
+    export ROS_HUMANPOSE_OCTET="${ROS_HUMANPOSE_OCTET:-$edge_octet}"
+    export NSL_EDGE_NAMESPACE="cam_${edge_octet}"
+fi
+
+wait_for_edge_lan "$edge_octet" || true
+if ! wait_for_camera_ip "$edge_octet"; then
+    echo "[edge-agent] exiting so systemd can retry after RestartSec"
+    exit 1
+fi
+
 sync_singleview_weight() {
     [[ "${ROS_HUMANPOSE_SYNC_WEIGHTS_ON_START:-1}" =~ ^(1|true|yes)$ ]] || return 0
     local octet="${ROS_HUMANPOSE_OCTET:-${NSL_EDGE_OCTET:-}}"
@@ -28,7 +92,7 @@ sync_singleview_weight() {
     local remote_dir="${ROS_HUMANPOSE_WEIGHT_REMOTE_DIR:-~/colcon_ws/src/ros_humanpose/weight}"
     local local_dir="${ROS_HUMANPOSE_WEIGHT_LOCAL_DIR:-${pose_src}/weight}"
     if [[ -z "$octet" ]]; then
-        octet="$(ip -4 -o addr show 2>/dev/null | grep -oE '192\.168\.0\.[0-9]+' | head -n1 | awk -F. '{print $4}' || true)"
+        octet="$(detect_edge_octet)"
     fi
     [[ -n "$octet" ]] || return 0
     mkdir -p "$local_dir"
@@ -46,6 +110,7 @@ sync_singleview_weight() {
 sync_singleview_weight
 
 camera_args=(
+    namespace:="${NSL_EDGE_NAMESPACE:-auto}"
     use_rviz:=false
     use_rqt:=false
     use_rgb_compressor:="${NSL_USE_RGB_COMPRESSOR:-true}"
@@ -55,6 +120,7 @@ camera_args=(
 )
 
 pose_args=(
+    namespace:="${NSL_EDGE_NAMESPACE:-auto}"
     use_rviz:=false
 )
 
