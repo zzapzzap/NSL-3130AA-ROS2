@@ -171,7 +171,7 @@ def _detect_live_cameras(timeout=8.0, settle_after_first=3.0):
     found = set()
     while time.time() < deadline:
         try:
-            out = subprocess.check_output(['ros2', 'topic', 'list'], text=True,
+            out = subprocess.check_output(['ros2', 'topic', 'list', '--no-daemon'], text=True,
                                           stderr=subprocess.DEVNULL, timeout=5)
         except Exception:
             out = ''
