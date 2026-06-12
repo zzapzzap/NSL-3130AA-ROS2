@@ -4,7 +4,11 @@ set -euo pipefail
 setup_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${setup_dir}/.." && pwd)"
 fleet_first_octet=51
-fleet_last_octet=59
+fleet_last_octet=60
+host_first_octet=61
+host_last_octet=70
+host_ip="${NSL_HOST_IP:-192.168.0.61}"
+default_edge_octets="${NSL_EDGE_OCTETS:-51,52,53}"
 camera_host_offset=50
 camera_sensor_offset=150
 camera_ip="${NSL_CAMERA_IP:-auto}"
@@ -15,15 +19,20 @@ factory_host_ip="${NSL_FACTORY_HOST_IP:-192.168.0.190}"
 legacy_camera_ip="${NSL_LEGACY_CAMERA_IP:-192.168.2.220}"
 camera_apply_wait_sec="${NSL_CAMERA_APPLY_WAIT_SEC:-15}"
 domain_id="${ROS_DOMAIN_ID:-42}"
+fleet_role="${NSL_FLEET_ROLE:-auto}"
 
 usage() {
     printf 'Usage: %s [--check|--set-camera-ip|--host-only]\n' "$0"
-    printf '  no args          Configure host DDS/ROS env, then ensure the camera IP from the Set number.\n'
+    printf '  no args          Auto-detect role: edge %s-%s configures camera, host %s-%s sets runtime only.\n' \
+        "$fleet_first_octet" "$fleet_last_octet" "$host_first_octet" "$host_last_octet"
     printf '  --check          Print the rule-based addresses only; do not change files or camera IP.\n'
     printf '  --set-camera-ip  Write the rule-based camera IP, then stop.\n'
     printf '  --host-only      Configure host DDS/ROS env only; do not touch the camera.\n'
-    printf '\nRule: Set N=%s-%s -> LAN 192.168.0.N, camera NIC 192.168.2.(N+%s), camera 192.168.2.(N+%s), gateway 192.168.2.1\n' \
+    printf '  NSL_FLEET_ROLE=host|edge can override IP-range auto detection.\n'
+    printf '\nEdge rule: Set N=%s-%s -> LAN 192.168.0.N, camera NIC 192.168.2.(N+%s), camera 192.168.2.(N+%s)\n' \
         "$fleet_first_octet" "$fleet_last_octet" "$camera_host_offset" "$camera_sensor_offset"
+    printf 'Host rule: 192.168.0.%s-%s -> DDS/runtime host only, no camera IP write.\n' \
+        "$host_first_octet" "$host_last_octet"
 }
 
 ensure_bashrc_line() {
@@ -60,6 +69,52 @@ ensure_single_dds_source() {
     else
         rm -f "$tmp"
     fi
+}
+
+ensure_runtime_env_source() {
+    local line="source ${HOME}/.ros/nsl_runtime.env"
+    touch "${HOME}/.bashrc"
+    if ! grep -Fqx "$line" "${HOME}/.bashrc"; then
+        printf '%s\n' "$line" >> "${HOME}/.bashrc"
+        printf '[fleet] appended to ~/.bashrc: %s\n' "$line"
+    fi
+}
+
+write_runtime_env() {
+    local role="$1"
+    local octet="${2:-}"
+    local env_file="${HOME}/.ros/nsl_runtime.env"
+    mkdir -p "${HOME}/.ros"
+    {
+        printf 'export ROS_DOMAIN_ID=%s\n' "$domain_id"
+        printf 'export RMW_IMPLEMENTATION=rmw_fastrtps_cpp\n'
+        printf 'export ROS_LOCALHOST_ONLY=0\n'
+        printf 'export NSL_FLEET_ROLE=%s\n' "$role"
+        printf 'export NSL_HOST_IP=%s\n' "$host_ip"
+        printf 'export ROS_HUMANPOSE_WEIGHT_HOST=%s\n' "$host_ip"
+        if [[ "$role" == "edge" && -n "$octet" ]]; then
+            printf 'export NSL_EDGE_OCTET=%s\n' "$octet"
+            printf 'export NSL_EDGE_NAMESPACE=cam_%s\n' "$octet"
+        elif [[ "$role" == "host" ]]; then
+            printf 'export NSL_EDGE_OCTETS=%s\n' "$default_edge_octets"
+        fi
+    } > "$env_file"
+    printf '[fleet] wrote runtime env: %s (%s)\n' "$env_file" "$role"
+}
+
+enable_edge_service() {
+    local user_name="${SUDO_USER:-${USER}}"
+    local unit_name="nsl-edge-agent@${user_name}.service"
+    local template="${setup_dir}/nsl-edge-agent.service"
+
+    [[ "${NSL_INSTALL_EDGE_SERVICE:-1}" =~ ^(1|true|yes)$ ]] || return 0
+    [[ -f "$template" ]] || return 0
+
+    sudo install -m 0644 "$template" /etc/systemd/system/nsl-edge-agent@.service
+    sudo systemctl daemon-reload
+    sudo systemctl enable "$unit_name"
+    printf '[fleet] enabled edge service: %s\n' "$unit_name"
+    printf '[fleet] start now: sudo systemctl start %s\n' "$unit_name"
 }
 
 source_ros_setup() {
@@ -176,6 +231,11 @@ try_reachable_ip_write() {
 is_fleet_octet() {
     local octet="${1:-}"
     [[ "$octet" =~ ^[0-9]+$ ]] && (( octet >= fleet_first_octet && octet <= fleet_last_octet ))
+}
+
+is_host_octet() {
+    local octet="${1:-}"
+    [[ "$octet" =~ ^[0-9]+$ ]] && (( octet >= host_first_octet && octet <= host_last_octet ))
 }
 
 resolve_rule_addresses() {
@@ -334,6 +394,7 @@ case "$mode" in
         ;;
     --host-only)
         camera_mode="none"
+        fleet_role="host"
         ;;
     *)
         usage >&2
@@ -344,16 +405,34 @@ esac
 lan_ip="$(ip -4 -o addr show 2>/dev/null | grep -oE '192\.168\.0\.[0-9]+' | head -n1 || true)"
 cam_nic_ip="$(ip -4 -o addr show 2>/dev/null | grep -oE '192\.168\.2\.[0-9]+' | head -n1 || true)"
 cam_iface="$(ip -4 -o addr show 2>/dev/null | awk '/192\.168\.2\./ {print $2; exit}' || true)"
+fleet_kind="unknown"
 
 if [[ -z "$lan_ip" ]]; then
     printf '[fleet] WARNING: no 192.168.0.x LAN IP found; namespace:=auto and DDS LAN pinning will not work.\n' >&2
 else
     edge_octet="${lan_ip##*.}"
-    if ! is_fleet_octet "$edge_octet"; then
-        printf '[fleet] NOTE: LAN IP is %s. Edge Set range is 192.168.0.%s-%s; hosts may be outside this range.\n' \
-            "$lan_ip" "$fleet_first_octet" "$fleet_last_octet"
-    else
+    if [[ "${fleet_role,,}" == "host" ]]; then
+        fleet_kind="host"
+        printf '[fleet] Host role forced by NSL_FLEET_ROLE=host on LAN IP %s.\n' "$lan_ip"
+        if [[ "$camera_mode" == "best_effort" ]]; then
+            camera_mode="none"
+        fi
+    elif [[ "${fleet_role,,}" == "edge" ]]; then
+        fleet_kind="edge"
+        printf '[fleet] Edge role forced by NSL_FLEET_ROLE=edge on LAN IP %s.\n' "$lan_ip"
+    elif is_fleet_octet "$edge_octet"; then
+        fleet_kind="edge"
         printf '[fleet] Edge LAN IP %s -> namespace /cam_%s\n' "$lan_ip" "$edge_octet"
+    elif is_host_octet "$edge_octet"; then
+        fleet_kind="host"
+        printf '[fleet] Host LAN IP %s detected (host range 192.168.0.%s-%s).\n' \
+            "$lan_ip" "$host_first_octet" "$host_last_octet"
+        if [[ "$camera_mode" == "best_effort" ]]; then
+            camera_mode="none"
+        fi
+    else
+        printf '[fleet] NOTE: LAN IP is %s. Edge range is 192.168.0.%s-%s; host range is 192.168.0.%s-%s.\n' \
+            "$lan_ip" "$fleet_first_octet" "$fleet_last_octet" "$host_first_octet" "$host_last_octet"
     fi
 fi
 
@@ -388,6 +467,8 @@ fi
 
 ensure_bashrc_line "export ROS_DOMAIN_ID=${domain_id}"
 ensure_single_dds_source
+write_runtime_env "$fleet_kind" "${edge_octet:-}"
+ensure_runtime_env_source
 
 source_ros_setup "${setup_dir}/setup_dds_interface.bash"
 source_ros_setup /opt/ros/humble/setup.bash
@@ -415,7 +496,13 @@ if [[ "$camera_mode" != "none" ]]; then
 fi
 
 printf '[fleet] Runtime launch:\n'
-printf '  ros2 launch roboscan_nsl3130 camera.launch.py use_rviz:=false use_rqt:=false\n'
+if [[ "$fleet_kind" == "host" ]]; then
+    printf '  ros2 launch roboscan_nsl3130 multiview.launch.py\n'
+    printf '  ros2 launch roboscan_nsl3130 multiview.launch.py calibration:=true\n'
+else
+    enable_edge_service
+    printf '  ros2 launch roboscan_nsl3130 camera.launch.py use_rviz:=false use_rqt:=false\n'
+fi
 if (( camera_result == 1 )); then
     printf '[fleet] NOTE: camera IP was not verified. Check camera power/USB/Ethernet, or run:\n'
     printf '  %s --set-camera-ip\n' "$0"

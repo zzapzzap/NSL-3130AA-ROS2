@@ -39,6 +39,7 @@ def generate_launch_description():
     extrinsic_tf_script = os.path.join(repo_scripts, 'extrinsic_tf_node.py')
     multiview_tf_script = os.path.join(repo_scripts, 'multiview_tf_node.py')
     detect_script       = os.path.join(repo_scripts, 'detect_camera_id.py')
+    rgb_compressor_script = os.path.join(repo_scripts, 'rgb_compressor_node.py')
 
     # Sensor-tuning profiles. The driver reads the file in NSL_PARAMS_FILE
     # (see roboscan_publish_node.cpp). Defaults are the repo (zzapzzap) baseline.
@@ -270,6 +271,18 @@ def generate_launch_description():
                 ('roboscanPointCloudRgb', LaunchConfiguration('point_cloud_rgb_topic').perform(context)),
             ])]
 
+        # Optional compressed RGB mirror for host-side monitoring/recording.
+        # Local edge inference still consumes the raw RGB topic.
+        if _is_true(context, 'use_rgb_compressor'):
+            actions.append(ExecuteProcess(
+                cmd=['python3', rgb_compressor_script,
+                     '--input-topic', _abs_topic(ns, LaunchConfiguration('rgb_topic').perform(context)),
+                     '--output-topic', _abs_topic(ns, LaunchConfiguration('rgb_compressed_topic').perform(context)),
+                     '--quality', LaunchConfiguration('rgb_jpeg_quality').perform(context),
+                     '--resize-width', LaunchConfiguration('rgb_compressed_width').perform(context),
+                     '--frame-skip', LaunchConfiguration('rgb_compressed_frame_skip').perform(context)],
+                output='screen'))
+
         # Extrinsic → TF. Runs outside the namespace (publishes serial-prefixed
         # frames to the global /tf), so it needs the absolute point-cloud topic.
         if _is_true(context, 'use_extrinsic_tf'):
@@ -389,6 +402,17 @@ def generate_launch_description():
         DeclareLaunchArgument('gray_topic',            default_value='camera/gray'),
         DeclareLaunchArgument('point_cloud_topic',     default_value='camera/point_cloud'),
         DeclareLaunchArgument('point_cloud_rgb_topic', default_value='camera/point_cloud_rgb'),
+        DeclareLaunchArgument(
+            'use_rgb_compressor', default_value='true',
+            description='Publish a host-friendly JPEG mirror of RGB as camera/rgb/image_raw/compressed'),
+        DeclareLaunchArgument('rgb_compressed_topic', default_value='camera/rgb/image_raw/compressed'),
+        DeclareLaunchArgument('rgb_jpeg_quality', default_value='80'),
+        DeclareLaunchArgument(
+            'rgb_compressed_width', default_value='0',
+            description='0 keeps native RGB size; otherwise downscale to this width before JPEG'),
+        DeclareLaunchArgument(
+            'rgb_compressed_frame_skip', default_value='0',
+            description='0 publishes every frame; 1 every other frame, etc.'),
         # ── Driver node + extrinsic TF + rviz + rqt (namespace & profile resolved at launch) ──
         OpaqueFunction(function=_fleet_setup),
     ])

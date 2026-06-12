@@ -5,8 +5,9 @@ Single multiview entry point (viewer + calibration in one launch file).
   ros2 launch roboscan_nsl3130 multiview.launch.py
       → VIEWER: RViz with every CONNECTED camera + tag anchored under the shared
         `stag_marker` frame. The layout is generated dynamically from the cameras
-        that are actually publishing a colour cloud (2 live → 2 panels, 3 → 3, …).
-        Override with  cameras:=56,57 .
+        that are actually publishing a colour cloud. Override with cameras:=56,57.
+        Raw RGB image panels are off by default to keep multi-camera traffic light;
+        enable them with show_rgb_images:=true.
 
   ros2 launch roboscan_nsl3130 multiview.launch.py calibration:=True
       → CALIBRATION only (headless one-touch, NO RViz): collect ~10 STag views
@@ -17,10 +18,10 @@ Single multiview entry point (viewer + calibration in one launch file).
       duration:=N for a time-based window instead of a fixed count.
 
 Viewer layout choices: the Displays (topic/status) panel sits on TOP of the left
-column with the per-camera RGB image panels stacked below it (Time at the bottom);
-the Views panel is omitted (3D orbit navigation still works), background unified to
-48;48;48, Fixed Frame is always the shared `stag_marker`. The dock arrangement is
-emitted as a QMainWindow State blob by gen_multiview_rviz_layout.py.
+column; optional per-camera RGB image panels can be stacked below it (Time at the
+bottom). The Views panel is omitted (3D orbit navigation still works), background
+unified to 48;48;48, Fixed Frame is always the shared `stag_marker`. The dock
+arrangement is emitted as a QMainWindow State blob by gen_multiview_rviz_layout.py.
 """
 
 import glob
@@ -84,6 +85,11 @@ def _detect_ip_octet():
     return ''
 
 
+def _is_host_machine():
+    octet = _detect_ip_octet()
+    return octet.isdigit() and 61 <= int(octet) <= 70
+
+
 def _calib_actions(context):
     """calibration:=true.
 
@@ -94,7 +100,9 @@ def _calib_actions(context):
     is_host:=false → run the local calibration node on THIS machine's camera.
     """
     trigger_topic = LaunchConfiguration('trigger_topic').perform(context).strip() or '/fleet/calibrate'
-    if _is_true(context, 'is_host'):
+    is_host_arg = LaunchConfiguration('is_host').perform(context).strip().lower()
+    is_host = _is_host_machine() if is_host_arg == 'auto' else is_host_arg in ('true', '1', 'yes')
+    if is_host:
         print(f'[multiview] is_host → broadcasting {trigger_topic} to the fleet '
               '(each edge calibrates locally).')
         # publish a few times so every edge is discovered; edges ignore repeats while armed.
@@ -134,7 +142,6 @@ def _calib_actions(context):
              '--reproj-thresh', LaunchConfiguration('reproj_thresh').perform(context),
              '--display',       LaunchConfiguration('use_gui').perform(context),
              '--depth-refine',  LaunchConfiguration('depth_refine').perform(context),
-             '--depth-refine-mode', LaunchConfiguration('depth_refine_mode').perform(context),
              '--depth-band',    LaunchConfiguration('depth_band').perform(context),
              '--ransac-tol',    LaunchConfiguration('ransac_tol').perform(context),
              '--max-depth-delta', LaunchConfiguration('max_depth_delta').perform(context),
@@ -154,11 +161,13 @@ def _sort_ids(ids):
     return sorted(ids, key=lambda s: (0, int(s)) if s.isdigit() else (1, s))
 
 
-def _detect_live_cameras(timeout=8.0):
+def _detect_live_cameras(timeout=8.0, settle_after_first=3.0):
     """cam ids publishing a colour cloud right now, e.g. {'56','57'}.
-    Retries while DDS finishes discovering the edges."""
+    Keep collecting briefly after the first hit so late DDS discovery does not
+    make the viewer launch with only one camera."""
     pat = re.compile(r'^/cam_([^/]+)/camera/point_cloud_rgb$')
     deadline = time.time() + timeout
+    settle_deadline = None
     found = set()
     while time.time() < deadline:
         try:
@@ -166,11 +175,16 @@ def _detect_live_cameras(timeout=8.0):
                                           stderr=subprocess.DEVNULL, timeout=5)
         except Exception:
             out = ''
+        before = len(found)
         for ln in out.splitlines():
             m = pat.match(ln.strip())
             if m:
                 found.add(m.group(1))
-        if found:
+        if found and settle_deadline is None:
+            settle_deadline = time.time() + settle_after_first
+        elif len(found) > before:
+            settle_deadline = time.time() + settle_after_first
+        if settle_deadline is not None and time.time() >= settle_deadline:
             break
         time.sleep(1.0)
     return found
@@ -210,8 +224,26 @@ def _resolve_cameras(context, calib_dir):
     return []
 
 
-def _camera_group(cam_id, color):
+def _camera_group(cam_id, color, show_rgb_image):
     """One RViz Group = colour PointCloud2 + uniquely-named RGB Image."""
+    image_display = ''
+    if show_rgb_image:
+        image_display = f"""\
+        - Class: rviz_default_plugins/Image
+          Enabled: true
+          Max Value: 1
+          Min Value: 0
+          Name: cam_{cam_id} RGB
+          Normalize Range: true
+          Topic:
+            Depth: 5
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Best Effort
+            Value: /cam_{cam_id}/camera/rgb/image_raw
+          Transport Hint: compressed
+          Value: true
+"""
     return f"""\
     # ── cam_{cam_id} ──────────────────────────────────────────────────────
     - Class: rviz_common/Group
@@ -245,19 +277,7 @@ def _camera_group(cam_id, color):
             Value: /cam_{cam_id}/camera/point_cloud_rgb
           Use Fixed Frame: true
           Value: true
-        - Class: rviz_default_plugins/Image
-          Enabled: true
-          Max Value: 1
-          Min Value: 0
-          Name: cam_{cam_id} RGB
-          Normalize Range: true
-          Topic:
-            Depth: 5
-            Durability Policy: Volatile
-            History Policy: Keep Last
-            Reliability Policy: Best Effort
-            Value: /cam_{cam_id}/camera/rgb/image_raw
-          Value: true
+{image_display.rstrip()}
       Enabled: true
       Name: cam_{cam_id}_PointCloud
 """
@@ -277,13 +297,14 @@ def _layout_state(cam_ids):
         return ''
 
 
-def _build_rviz_config(cam_ids, fixed_frame):
+def _build_rviz_config(cam_ids, fixed_frame, show_rgb_images):
     """Render a complete rviz2 config for exactly `cam_ids` (already sorted)."""
     expanded = '\n'.join(f'        - /cam_{c}_PointCloud1' for c in cam_ids) or \
         '        - /Global Options1'
-    groups = ''.join(_camera_group(c, PALETTE[i % len(PALETTE)])
+    groups = ''.join(_camera_group(c, PALETTE[i % len(PALETTE)], show_rgb_images)
                      for i, c in enumerate(cam_ids))
-    img_geometry = '\n'.join(f'  cam_{c} RGB:\n    collapsed: false' for c in cam_ids)
+    img_geometry = ('\n'.join(f'  cam_{c} RGB:\n    collapsed: false' for c in cam_ids)
+                    if show_rgb_images else '')
     state = _layout_state(cam_ids)
     qmw = f'  QMainWindow State: {state}\n' if state else ''
 
@@ -395,7 +416,8 @@ def _viewer_actions(context):
             rviz_config = explicit_cfg
     else:
         cam_ids = _resolve_cameras(context, calib_dir)
-        rviz_config = _write_tmp(_build_rviz_config(cam_ids, REFERENCE_FRAME))
+        rviz_config = _write_tmp(
+            _build_rviz_config(cam_ids, REFERENCE_FRAME, _is_true(context, 'show_rgb_images')))
 
     actions = []
     # Optional LOCAL scan: only to review this machine's saved calib_output when no
@@ -429,9 +451,9 @@ def generate_launch_description():
         DeclareLaunchArgument('calibration', default_value='false',
             description='true → STag calibration (headless one-touch, no RViz); '
                         'false (default) → the RViz multiview viewer'),
-        DeclareLaunchArgument('is_host', default_value='false',
+        DeclareLaunchArgument('is_host', default_value='auto',
             description='With calibration:=true, broadcast /fleet/calibrate so every edge '
-                        '(calib_listener) calibrates its own camera at once. false = calibrate this machine.'),
+                        '(calib_listener) calibrates its own camera at once. auto = host IP 192.168.0.61-70.'),
         DeclareLaunchArgument('trigger_topic', default_value='/fleet/calibrate',
             description='Topic the host broadcasts std_msgs/Empty on to start fleet calibration.'),
 
@@ -442,6 +464,9 @@ def generate_launch_description():
         DeclareLaunchArgument('rviz_config', default_value='',
             description='Optional hand-made rviz config to use as-is (Fixed Frame patched). '
                         'Empty = generate the layout dynamically from connected cameras.'),
+        DeclareLaunchArgument('show_rgb_images', default_value='false',
+            description='Also subscribe/display raw RGB image panels. Default false keeps '
+                        'multi-camera traffic low; point_cloud_rgb remains colorized.'),
         DeclareLaunchArgument('use_multiview_tf', default_value='false',
             description='Also run a LOCAL multiview_tf scan of this machine\'s calib_output '
                         '(offline review when no live edge publishes the stag_marker TFs). '
@@ -466,8 +491,6 @@ def generate_launch_description():
                         'true just adds the viewer + [s]save [r]reset [q]quit; it still auto-saves after duration.'),
         DeclareLaunchArgument('depth_refine', default_value='true',
             description='Per-tag LiDAR-plane RANSAC depth refine (needs extrinsic.yml)'),
-        DeclareLaunchArgument('depth_refine_mode', default_value='slide',
-            description='slide = epipolar sliding-window depth search; legacy = initial-plane-band RANSAC'),
         DeclareLaunchArgument('depth_band', default_value='0.50',
             description='± depth band (m) for the LiDAR RANSAC/refinement crop'),
         DeclareLaunchArgument('ransac_tol', default_value='0.08',

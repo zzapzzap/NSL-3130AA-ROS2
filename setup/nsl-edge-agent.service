@@ -1,0 +1,18 @@
+[Unit]
+Description=NSL edge camera + single-view human pose agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+Environment=COLCON_WS=/home/%i/colcon_ws
+Environment=ROS_LOG_DIR=/home/%i/.ros/log
+ExecStart=/home/%i/colcon_ws/src/NSL-3130AA-ROS2/setup/run_edge_agent.bash
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGINT
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target
