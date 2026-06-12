@@ -443,7 +443,27 @@ class MultiviewCalibNode(Node):
             return ns, f'{ns}_camera_frame', lf
         return self.ns, self.camera_frame, self.lidar_frame
 
+    def _cloud_points_camera(self):
+        """Return accumulated LiDAR points transformed into the RGB camera frame."""
+        if self._ext is None:
+            return None, {'status': 'no extrinsic.yml'}
+        if not self._clouds:
+            return None, {'status': 'no LiDAR cloud received'}
+        R_e, t_e = self._ext                      # x_cam = R_e*x_lidar + t_e
+        pts_l = np.concatenate(list(self._clouds), axis=0)
+        pts_c = (R_e @ pts_l.T).T + t_e           # LiDAR points in camera frame
+        pts_c = pts_c[np.isfinite(pts_c).all(axis=1)]
+        if pts_c.shape[0] == 0:
+            return None, {'status': 'no finite LiDAR points'}
+        return pts_c, None
+
     def _refine_depth(self, R, t, marker_size):
+        mode = str(getattr(self.a, 'depth_refine_mode', 'slide')).strip().lower()
+        if mode in ('legacy', 'band', 'ransac'):
+            return self._refine_depth_legacy(R, t, marker_size)
+        return self._refine_depth_slide(R, t, marker_size)
+
+    def _refine_depth_legacy(self, R, t, marker_size):
         """Snap the marker depth to the LiDAR plane, keeping the STag rotation.
 
         Trust the STag marker normal n=R[:,2]; gather LiDAR points inside the
@@ -452,13 +472,9 @@ class MultiviewCalibNode(Node):
         offset along n; then move the marker centre along the camera viewing ray
         onto that plane (so the image projection — rotation & lateral — is kept,
         only depth changes). Returns (t_corrected, info_dict)."""
-        if self._ext is None:
-            return t, {'status': 'no extrinsic.yml'}
-        if not self._clouds:
-            return t, {'status': 'no LiDAR cloud received'}
-        R_e, t_e = self._ext                      # x_cam = R_e·x_lidar + t_e
-        pts_l = np.concatenate(list(self._clouds), axis=0)
-        pts_c = (R_e @ pts_l.T).T + t_e           # LiDAR points in camera frame
+        pts_c, err = self._cloud_points_camera()
+        if err is not None:
+            return t, err
 
         n = R[:, 2].astype(np.float64)
         n = n / np.linalg.norm(n)                 # marker normal (camera frame)
@@ -496,11 +512,131 @@ class MultiviewCalibNode(Node):
                 'inliers': int(inl), 'used': k}
         return t_corr, {
             'status': 'ok',
+            'method': 'legacy',
             'delta_m': delta_m,
             'plane_delta_m': float(d_pl - s0),
             'depth_before_m': float(np.linalg.norm(c)),
             'depth_after_m': float(np.linalg.norm(t_corr)),
             'inliers': int(inl), 'used': k}
+
+    def _refine_depth_slide(self, R, t, marker_size):
+        """Find marker range by sliding a marker-frame crop along the camera ray.
+
+        The STag rotation and camera-to-marker ray are treated as reliable. Depth is
+        searched over the non-zero LiDAR range interval along that ray. At each
+        candidate range, LiDAR points are expressed in the candidate marker frame
+        and scored by how many fall inside a marker-aligned crop:
+          x: +/- slide_crop_x, y: +/- slide_crop_y, z: +/- slide_z_band.
+        The best window is then refined by a 1-D RANSAC on marker-frame z.
+        """
+        pts_c, err = self._cloud_points_camera()
+        if err is not None:
+            return t, err
+
+        R = np.asarray(R, np.float64).reshape(3, 3)
+        c = np.asarray(t, np.float64).reshape(3)
+        depth0 = float(np.linalg.norm(c))
+        if depth0 < 1e-6:
+            return t, {'status': 'invalid monocular marker depth'}
+
+        u = c / depth0                             # camera ray from STag pose
+        v = R.T @ u                                # ray direction in marker axes
+        if abs(float(v[2])) < 1e-6:
+            return t, {'status': 'marker edge-on (degenerate)'}
+
+        ranges = pts_c @ u
+        min_range = max(1e-3, float(getattr(self.a, 'slide_min_range', 0.05)))
+        valid = ranges > min_range
+        if int(valid.sum()) < int(self.a.slide_min_points):
+            return t, {'status': f'only {int(valid.sum())} LiDAR pts on positive epipolar range'}
+
+        pts_c = pts_c[valid]
+        ranges = ranges[valid]
+        pts_m0 = pts_c @ R                         # R.T * point, marker origin at camera
+
+        r_min = float(np.min(ranges))
+        r_max = float(np.max(ranges))
+        user_max = float(getattr(self.a, 'slide_max_range', 0.0))
+        if user_max > 0.0:
+            r_max = min(r_max, user_max)
+        if r_max <= r_min:
+            return t, {'status': f'invalid slide range ({r_min:.3f}, {r_max:.3f})'}
+
+        stride = max(1e-3, float(self.a.slide_stride))
+        crop_x = max(1e-3, float(self.a.slide_crop_x))
+        crop_y = max(1e-3, float(self.a.slide_crop_y))
+        z_band = max(1e-3, float(self.a.slide_z_band))
+        min_pts = int(self.a.slide_min_points)
+
+        best = None
+        for lam in np.arange(r_min, r_max + 0.5 * stride, stride):
+            q = pts_m0 - lam * v
+            near = ((np.abs(q[:, 0]) <= crop_x)
+                    & (np.abs(q[:, 1]) <= crop_y)
+                    & (np.abs(q[:, 2]) <= z_band))
+            count = int(near.sum())
+            if count <= 0:
+                continue
+            med_abs_z = float(np.median(np.abs(q[near, 2])))
+            # Prefer the densest marker-aligned crop; ties go to the tighter plane,
+            # then to the range closest to the monocular estimate.
+            key = (count, -med_abs_z, -abs(float(lam) - depth0))
+            if best is None or key > best[0]:
+                best = (key, float(lam), count, med_abs_z)
+
+        if best is None or best[2] < min_pts:
+            found = 0 if best is None else best[2]
+            return t, {'status': f'weak sliding-window support ({found}/{min_pts} pts)'}
+
+        _, lam0, slide_count, slide_med_abs_z = best
+        q = pts_m0 - lam0 * v
+        crop = ((np.abs(q[:, 0]) <= crop_x)
+                & (np.abs(q[:, 1]) <= crop_y)
+                & (np.abs(q[:, 2]) <= max(float(self.a.depth_band), z_band)))
+        qz = q[crop, 2]
+        k = int(qz.shape[0])
+        if k < min_pts:
+            return t, {'status': f'only {k} LiDAR pts in selected sliding crop'}
+
+        z_pl, inl = _ransac_offset(qz, tol=min(float(self.a.ransac_tol), max(float(self.a.depth_band), z_band)))
+        if inl < max(15, int(0.3 * k)):
+            return t, {'status': f'weak sliding plane ({inl}/{k} inliers)'}
+
+        lam_corr = lam0 + float(z_pl) / float(v[2])
+        if lam_corr <= min_range:
+            return t, {'status': f'invalid refined depth ({lam_corr:.3f} m)'}
+
+        t_corr = lam_corr * u
+        delta_m = float(lam_corr - depth0)
+        max_delta = float(getattr(self.a, 'max_depth_delta', 0.0))
+        if max_delta > 0.0 and abs(delta_m) > max_delta:
+            return t, {
+                'status': f'rejected large depth delta ({delta_m:+.3f} m > {max_delta:.3f} m)',
+                'method': 'slide',
+                'delta_m': delta_m,
+                'slide_depth_m': float(lam0),
+                'plane_delta_m': float(z_pl),
+                'depth_before_m': depth0,
+                'depth_after_m': float(lam_corr),
+                'inliers': int(inl), 'used': k,
+                'slide_points': int(slide_count),
+                'slide_med_abs_z_m': float(slide_med_abs_z),
+                'slide_range_min_m': r_min,
+                'slide_range_max_m': r_max}
+
+        return t_corr, {
+            'status': 'ok',
+            'method': 'slide',
+            'delta_m': delta_m,
+            'slide_depth_m': float(lam0),
+            'plane_delta_m': float(z_pl),
+            'depth_before_m': depth0,
+            'depth_after_m': float(lam_corr),
+            'inliers': int(inl), 'used': k,
+            'slide_points': int(slide_count),
+            'slide_med_abs_z_m': float(slide_med_abs_z),
+            'slide_range_min_m': r_min,
+            'slide_range_max_m': r_max}
 
     def _select_marker(self, ids):
         ids = np.asarray(ids).reshape(-1)
@@ -608,11 +744,20 @@ class MultiviewCalibNode(Node):
                                 rmse=float(np.mean(tag['err'])), n=len(tag['rv']), refine=refine)
             ref = refine
             ok = ref and ref.get('status') == 'ok'
+            if ok:
+                method = ref.get('method', 'legacy')
+                extra = ''
+                if method == 'slide':
+                    extra = (f'  slide {ref["slide_depth_m"]:.3f} m, '
+                             f'support {ref["slide_points"]} pts, '
+                             f'plane {ref["inliers"]}/{ref["used"]}')
+                depth_msg = (f'{method} depth {ref["depth_before_m"]:.3f}→'
+                             f'{ref["depth_after_m"]:.3f} m (Δ{ref["delta_m"]:+.3f}){extra}')
+            else:
+                depth_msg = f'depth-refine: {ref["status"] if ref else "off"}'
             self.get_logger().info(
                 f'[tag {mid}{" REF" if mid == rid else ""}] {results[mid]["n"]} views  '
-                f'reproj {results[mid]["rmse"]:.2f}px  ' +
-                (f'depth {ref["depth_before_m"]:.3f}→{ref["depth_after_m"]:.3f} m (Δ{ref["delta_m"]:+.3f})'
-                 if ok else f'depth-refine: {ref["status"] if ref else "off"}'))
+                f'reproj {results[mid]["rmse"]:.2f}px  {depth_msg}')
 
         self._save(rid, results)
         self.saved = True
@@ -649,7 +794,9 @@ class MultiviewCalibNode(Node):
         fs.write('reproj_rmse_px', float(ref['rmse']))
         fs.write('depth_refined', 1 if depth_ok else 0)
         if depth_ok:
+            fs.write('depth_refine_method', ref['refine'].get('method', 'legacy'))
             fs.write('depth_delta_m', float(ref['refine']['delta_m']))
+            fs.write('depth_plane_delta_m', float(ref['refine'].get('plane_delta_m', 0.0)))
         # canonical: reference tag pose in rgb cam = stag_marker ↔ rgb (x_cam = R·x_marker + t)
         fs.write('R', np.ascontiguousarray(ref['R'], np.float64))
         fs.write('t', np.ascontiguousarray(ref['t'].reshape(3, 1), np.float64))
@@ -658,12 +805,16 @@ class MultiviewCalibNode(Node):
         fs.write('tag_count', int(len(ids)))
         for k, mid in enumerate(ids):
             r = results[mid]
-            ddv = r['refine']['delta_m'] if (r['refine'] and r['refine'].get('status') == 'ok') else 0.0
+            tag_depth_ok = bool(r['refine'] and r['refine'].get('status') == 'ok')
+            ddv = r['refine']['delta_m'] if tag_depth_ok else 0.0
             fs.write(f'tag_{k}_id', int(mid))
             fs.write(f'tag_{k}_size', float(r['size']))
             fs.write(f'tag_{k}_R', np.ascontiguousarray(r['R'], np.float64))
             fs.write(f'tag_{k}_t', np.ascontiguousarray(r['t'].reshape(3, 1), np.float64))
             fs.write(f'tag_{k}_depth_delta_m', float(ddv))
+            if tag_depth_ok:
+                fs.write(f'tag_{k}_depth_refine_method', r['refine'].get('method', 'legacy'))
+                fs.write(f'tag_{k}_depth_plane_delta_m', float(r['refine'].get('plane_delta_m', 0.0)))
         fs.release()
 
         # human-readable summary — the per-tag monocular→RANSAC depth comparison
@@ -679,9 +830,15 @@ class MultiviewCalibNode(Node):
                 rf = r['refine']
                 tag = 'REF' if mid == rid else 'aux'
                 if rf and rf.get('status') == 'ok':
+                    method = rf.get('method', 'legacy')
+                    extra = ''
+                    if method == 'slide':
+                        extra = (f', slide={rf["slide_depth_m"]:.3f} m, '
+                                 f'support={rf["slide_points"]} pts')
                     f.write(f'  id {mid:>3} [{tag}] {r["size"]:.2f}m :  '
                             f'{rf["depth_before_m"]:.3f} → {rf["depth_after_m"]:.3f} m  '
-                            f'(Δ{rf["delta_m"]:+.3f} m, {rf["inliers"]}/{rf["used"]} pts)\n')
+                            f'(method={method}, Δ{rf["delta_m"]:+.3f} m, '
+                            f'{rf["inliers"]}/{rf["used"]} pts{extra})\n')
                 else:
                     f.write(f'  id {mid:>3} [{tag}] {r["size"]:.2f}m :  '
                             f'{np.linalg.norm(r["t_mono"]):.3f} m  '
@@ -727,14 +884,31 @@ def main():
                     help='Topic the host broadcasts std_msgs/Empty on to start fleet calibration.')
     ap.add_argument('--depth-refine', default='true',
                     help='Snap marker depth onto the LiDAR plane via RANSAC (true/false)')
+    ap.add_argument('--depth-refine-mode', default='slide',
+                    help='Depth refinement mode: slide = epipolar sliding-window search, '
+                         'legacy = old initial-plane-band RANSAC')
     ap.add_argument('--depth-band', type=float, default=0.50,
-                    help='± depth band (m) around the 1st-pass marker plane for the LiDAR RANSAC')
+                    help='± depth band (m) for the LiDAR RANSAC/refinement crop')
     ap.add_argument('--ransac-tol', type=float, default=0.08,
                     help='RANSAC inlier tolerance (m): LiDAR points within this distance of the '
                          'consensus marker plane are inliers (capped at --depth-band)')
-    ap.add_argument('--max-depth-delta', type=float, default=0.40,
+    ap.add_argument('--max-depth-delta', type=float, default=0.0,
                     help='Reject LiDAR depth refinement if the final camera-ray range correction exceeds '
                          'this many meters. Set <=0 to disable.')
+    ap.add_argument('--slide-crop-x', type=float, default=0.50,
+                    help='Sliding mode: marker-frame left/right crop half-width in meters')
+    ap.add_argument('--slide-crop-y', type=float, default=0.10,
+                    help='Sliding mode: marker-frame up/down crop half-height in meters')
+    ap.add_argument('--slide-z-band', type=float, default=0.12,
+                    help='Sliding mode: count points within this marker-frame z distance from the plane')
+    ap.add_argument('--slide-stride', type=float, default=0.10,
+                    help='Sliding mode: camera-ray range stride in meters')
+    ap.add_argument('--slide-min-points', type=int, default=30,
+                    help='Sliding mode: minimum LiDAR points required for a valid marker crop')
+    ap.add_argument('--slide-min-range', type=float, default=0.05,
+                    help='Sliding mode: minimum non-zero camera-ray range in meters')
+    ap.add_argument('--slide-max-range', type=float, default=0.0,
+                    help='Sliding mode: optional maximum camera-ray range in meters; <=0 uses cloud max')
     args, ros_args = ap.parse_known_args()
     args.display = str(args.display).strip().lower() in ('true', '1', 'yes')
     args.depth_refine = str(args.depth_refine).strip().lower() in ('true', '1', 'yes')
