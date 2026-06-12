@@ -82,18 +82,19 @@ roboscanPublisher::roboscanPublisher() :
 #ifdef image_transfer_function
 	,nodeHandle(std::shared_ptr<roboscanPublisher>(this, [](auto *) {}))
 	,imageTransport(nodeHandle)
-	,imagePublisher(imageTransport.advertise("roboscanImage", 1000))
+	,imagePublisher(imageTransport.advertise("roboscanImage", 1))
 #endif	
 { 
 
     RCLCPP_INFO(this->get_logger(), "start roboscanPublisher...\n");
-    auto qos_profile = rclcpp::QoS(rclcpp::KeepLast(10));
+    auto image_qos = rclcpp::QoS(rclcpp::KeepLast(5));
+    auto cloud_qos = rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile();
 
-    imgDistancePub = this->create_publisher<sensor_msgs::msg::Image>("roboscanDistance", qos_profile);
-    imgAmplPub = this->create_publisher<sensor_msgs::msg::Image>("roboscanAmpl", qos_profile);
-    imgGrayPub = this->create_publisher<sensor_msgs::msg::Image>("roboscanGray", qos_profile);
-    pointcloudPub = this->create_publisher<sensor_msgs::msg::PointCloud2>("roboscanPointCloud", qos_profile);
-    pointcloudRgbPub = this->create_publisher<sensor_msgs::msg::PointCloud2>("roboscanPointCloudRgb", qos_profile);
+    imgDistancePub = this->create_publisher<sensor_msgs::msg::Image>("roboscanDistance", image_qos);
+    imgAmplPub = this->create_publisher<sensor_msgs::msg::Image>("roboscanAmpl", image_qos);
+    imgGrayPub = this->create_publisher<sensor_msgs::msg::Image>("roboscanGray", image_qos);
+    pointcloudPub = this->create_publisher<sensor_msgs::msg::PointCloud2>("roboscanPointCloud", cloud_qos);
+    pointcloudRgbPub = this->create_publisher<sensor_msgs::msg::PointCloud2>("roboscanPointCloudRgb", cloud_qos);
 
 //	yaml_path_ = std::string(std::getenv("HOME")) + "/lidar_params.yaml";
 	// NSL_PARAMS_FILE lets camera.launch.py pick a profile (general vs calibration).

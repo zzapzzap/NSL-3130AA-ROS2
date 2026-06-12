@@ -48,6 +48,15 @@ _LATCHED_QOS = QoSProfile(
 )
 
 
+def _sensor_qos(depth=1):
+    return QoSProfile(
+        depth=depth,
+        history=QoSHistoryPolicy.KEEP_LAST,
+        reliability=QoSReliabilityPolicy.BEST_EFFORT,
+        durability=QoSDurabilityPolicy.VOLATILE,
+    )
+
+
 def _rotmat_to_quat(R):
     """Rotation matrix → quaternion (x, y, z, w), numerically robust."""
     m = np.asarray(R, dtype=np.float64).reshape(3, 3)
@@ -97,7 +106,7 @@ class ExtrinsicTfNode(Node):
         self._id_published = False
         if camera_id:
             self._publish_camera_id(camera_id)
-        self._sub = self.create_subscription(PointCloud2, lidar_topic, self._cb, 1)
+        self._sub = self.create_subscription(PointCloud2, lidar_topic, self._cb, _sensor_qos(1))
         self.get_logger().info(
             f'Waiting for {lidar_topic} to read the live LiDAR frame '
             f'(calib_dir={self._calib_dir}) ...')

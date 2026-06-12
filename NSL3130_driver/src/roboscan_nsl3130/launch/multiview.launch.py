@@ -6,8 +6,8 @@ Single multiview entry point (viewer + calibration in one launch file).
       → VIEWER: RViz with every CONNECTED camera + tag anchored under the shared
         `stag_marker` frame. The layout is generated dynamically from the cameras
         that are actually publishing a colour cloud. Override with cameras:=56,57.
-        Raw RGB image panels are off by default to keep multi-camera traffic light;
-        enable them with show_rgb_images:=true.
+        Compressed RGB image panels are on by default; disable them with
+        show_rgb_images:=false when only the colour clouds are needed.
 
   ros2 launch roboscan_nsl3130 multiview.launch.py calibration:=True
       → CALIBRATION only (headless one-touch, NO RViz): collect ~10 STag views
@@ -224,7 +224,7 @@ def _resolve_cameras(context, calib_dir):
     return []
 
 
-def _camera_group(cam_id, color, show_rgb_image):
+def _camera_group(cam_id, color, show_rgb_image, cloud_topic_depth, cloud_filter_size, cloud_point_size_pixels):
     """One RViz Group = colour PointCloud2 + uniquely-named RGB Image."""
     image_display = ''
     if show_rgb_image:
@@ -236,7 +236,7 @@ def _camera_group(cam_id, color, show_rgb_image):
           Name: cam_{cam_id} RGB
           Normalize Range: true
           Topic:
-            Depth: 5
+            Depth: 1
             Durability Policy: Volatile
             History Policy: Keep Last
             Reliability Policy: Best Effort
@@ -265,13 +265,13 @@ def _camera_group(cam_id, color, show_rgb_image):
           Min Color: 0; 0; 0
           Name: PointCloud
           Position Transformer: XYZ
-          Size (Pixels): 3
+          Size (Pixels): {cloud_point_size_pixels}
           Size (m): 0.009999999776482582
           Style: Points
           Topic:
-            Depth: 5
+            Depth: {cloud_topic_depth}
             Durability Policy: Volatile
-            Filter size: 10
+            Filter size: {cloud_filter_size}
             History Policy: Keep Last
             Reliability Policy: Best Effort
             Value: /cam_{cam_id}/camera/point_cloud_rgb
@@ -297,11 +297,26 @@ def _layout_state(cam_ids):
         return ''
 
 
-def _build_rviz_config(cam_ids, fixed_frame, show_rgb_images):
+def _build_rviz_config(
+    cam_ids,
+    fixed_frame,
+    show_rgb_images,
+    cloud_topic_depth,
+    cloud_filter_size,
+    cloud_point_size_pixels,
+    rviz_frame_rate,
+):
     """Render a complete rviz2 config for exactly `cam_ids` (already sorted)."""
     expanded = '\n'.join(f'        - /cam_{c}_PointCloud1' for c in cam_ids) or \
         '        - /Global Options1'
-    groups = ''.join(_camera_group(c, PALETTE[i % len(PALETTE)], show_rgb_images)
+    groups = ''.join(_camera_group(
+        c,
+        PALETTE[i % len(PALETTE)],
+        show_rgb_images,
+        cloud_topic_depth,
+        cloud_filter_size,
+        cloud_point_size_pixels,
+    )
                      for i, c in enumerate(cam_ids))
     img_geometry = ('\n'.join(f'  cam_{c} RGB:\n    collapsed: false' for c in cam_ids)
                     if show_rgb_images else '')
@@ -361,7 +376,7 @@ Visualization Manager:
   Global Options:
     Background Color: 48; 48; 48
     Fixed Frame: {fixed_frame}
-    Frame Rate: 30
+    Frame Rate: {rviz_frame_rate}
   Name: root
   Tools:
     - Class: rviz_default_plugins/Interact
@@ -404,6 +419,7 @@ Window Geometry:
 def _viewer_actions(context):
     """RViz viewer (dynamic per-camera layout) + optional local multiview_tf scan."""
     calib_dir = _calib_dir()
+    actions = []
     explicit_cfg = LaunchConfiguration('rviz_config').perform(context).strip()
     if explicit_cfg:
         # Power-user path: use a hand-made config as-is, only patch the Fixed Frame.
@@ -416,10 +432,21 @@ def _viewer_actions(context):
             rviz_config = explicit_cfg
     else:
         cam_ids = _resolve_cameras(context, calib_dir)
+        cloud_topic_depth = max(1, int(LaunchConfiguration('cloud_topic_depth').perform(context)))
+        cloud_filter_size = max(1, int(LaunchConfiguration('cloud_filter_size').perform(context)))
+        cloud_point_size_pixels = max(1, int(LaunchConfiguration('cloud_point_size_pixels').perform(context)))
+        rviz_frame_rate = max(1, int(LaunchConfiguration('rviz_frame_rate').perform(context)))
         rviz_config = _write_tmp(
-            _build_rviz_config(cam_ids, REFERENCE_FRAME, _is_true(context, 'show_rgb_images')))
+            _build_rviz_config(
+                cam_ids,
+                REFERENCE_FRAME,
+                _is_true(context, 'show_rgb_images'),
+                cloud_topic_depth,
+                cloud_filter_size,
+                cloud_point_size_pixels,
+                rviz_frame_rate,
+            ))
 
-    actions = []
     # Optional LOCAL scan: only to review this machine's saved calib_output when no
     # live edge is publishing (offline). Off by default — running it while edges also
     # publish would duplicate /tf_static (TF_REPEATED_DATA spam).
@@ -430,11 +457,12 @@ def _viewer_actions(context):
         actions.append(ExecuteProcess(
             cmd=['python3', tf_script, '--calib-dir', calib_dir, '--scan-all'], output='screen'))
 
-    rviz_node = Node(package='rviz2', executable='rviz2', name='multi_sensor_viewer',
-                     arguments=['-d', rviz_config], output='screen')
-    # Start RViz a few seconds late so latched /tf_static (from the edges) is received
-    # before the cloud displays subscribe.
-    actions.append(TimerAction(period=3.0, actions=[rviz_node]))
+    if _is_true(context, 'use_rviz'):
+        rviz_node = Node(package='rviz2', executable='rviz2', name='multi_sensor_viewer',
+                         arguments=['-d', rviz_config], output='screen')
+        # Start RViz a few seconds late so latched /tf_static (from the edges) is received
+        # before the cloud displays subscribe.
+        actions.append(TimerAction(period=3.0, actions=[rviz_node]))
     return actions
 
 
@@ -458,15 +486,25 @@ def generate_launch_description():
             description='Topic the host broadcasts std_msgs/Empty on to start fleet calibration.'),
 
         # ── viewer options (calibration:=false) ──
+        DeclareLaunchArgument('use_rviz', default_value='true',
+            description='Start the Host RViz multiview viewer. Set false for headless checks.'),
         DeclareLaunchArgument('cameras', default_value='',
             description="Comma list of cam ids to show (e.g. 56,57). Empty = auto-detect "
                         "live point_cloud_rgb topics, falling back to calib_output."),
         DeclareLaunchArgument('rviz_config', default_value='',
             description='Optional hand-made rviz config to use as-is (Fixed Frame patched). '
                         'Empty = generate the layout dynamically from connected cameras.'),
-        DeclareLaunchArgument('show_rgb_images', default_value='false',
-            description='Also subscribe/display raw RGB image panels. Default false keeps '
-                        'multi-camera traffic low; point_cloud_rgb remains colorized.'),
+        DeclareLaunchArgument('show_rgb_images', default_value='true',
+            description='Also display RGB image panels using compressed image transport. '
+                        'Set false for point-cloud-only RViz.'),
+        DeclareLaunchArgument('cloud_topic_depth', default_value='1',
+            description='RViz PointCloud2 topic queue depth. 1 keeps only the newest frame.'),
+        DeclareLaunchArgument('cloud_filter_size', default_value='1',
+            description='RViz PointCloud2 TF/message-filter queue size. 1 avoids backlog.'),
+        DeclareLaunchArgument('cloud_point_size_pixels', default_value='1',
+            description='RViz PointCloud2 point size in pixels. 1 is lightest for multi-camera.'),
+        DeclareLaunchArgument('rviz_frame_rate', default_value='15',
+            description='RViz render frame rate cap. Lower values reduce GPU/CPU pressure.'),
         DeclareLaunchArgument('use_multiview_tf', default_value='false',
             description='Also run a LOCAL multiview_tf scan of this machine\'s calib_output '
                         '(offline review when no live edge publishes the stag_marker TFs). '

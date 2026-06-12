@@ -588,11 +588,29 @@ ros2 launch roboscan_nsl3130 multiview.launch.py
 |---|---|
 | 포인트클라우드 | `/cam_N/camera/point_cloud` |
 | XYZRGB | `/cam_N/camera/point_cloud_rgb` |
-| 거리/RGB 이미지 | `/cam_N/camera/depth/image_raw` · `/cam_N/camera/rgb/image_raw` |
+| 거리/RGB 이미지 | `/cam_N/camera/depth/image_raw` · `/cam_N/camera/rgb/image_raw/compressed` |
 
 각 Edge가 [4-3 multiview 캘리브](#4-3-multiview-stag-캘리브레이션--카메라-간-공유-기준-프레임)를 마치고
 `camera.launch.py`를 실행하면 `stag_marker → cam_N_lidar_frame` TF가 `/tf_static`으로 공유됩니다.
 Host의 `multiview.launch.py`는 살아 있는 Edge의 TF와 포인트클라우드를 자동으로 받아 `stag_marker` 기준으로 정렬합니다.
+압축 RGB 패널도 기본으로 함께 표시합니다. Host 화면이 버거우면 `show_rgb_images:=false`로 RGB 패널을 끄거나,
+`rviz_frame_rate:=10`처럼 렌더링 속도를 낮추세요.
+
+멀티 카메라 RViz는 오래된 포인트클라우드를 쌓지 않도록 가볍게 맞춰져 있습니다. 기본값은
+`cloud_topic_depth:=1`, `cloud_filter_size:=1`, `cloud_point_size_pixels:=1`, `rviz_frame_rate:=15`입니다.
+이 설정은 네트워크보다 RViz 표시가 느릴 때 5-10초 뒤 화면이 멈춘 것처럼 보이는 상황을 줄입니다.
+
+대역폭 확인은 Host에서 아래처럼 합니다. 현재 5-7 Hz 기준으로 `point_cloud_rgb`는 보통 카메라당 몇 MB/s,
+압축 RGB는 보통 1-2 MB/s 수준이라 3대 운용만으로 1Gbps 선을 꽉 채우는 구조는 아닙니다.
+
+```bash
+ros2 topic bw /cam_51/camera/point_cloud_rgb
+ros2 topic bw /cam_51/camera/rgb/image_raw/compressed
+
+# 물리 연결이 100Mb/s로 떨어졌거나 에러가 쌓이는지 확인
+ip -s link
+sudo ethtool <Host와 연결된 포트이름> | grep -E 'Speed|Duplex|Link detected'
+```
 
 **공유 확인 (Host에서):**
 
@@ -616,6 +634,7 @@ ros2 run tf2_tools view_frames                              # frames.pdf 로 전
 - **다른 Edge 토픽이 아예 안 보인다** → `ROS_DOMAIN_ID` 불일치, 또는 공유기/스위치가 ROS 2 자동 발견 패킷을 막는 상황입니다. 한쪽 `ros2 multicast receive`, 다른 쪽 `ros2 multicast send` 로 점검됩니다.
 - **토픽이 접두어 없이(`/camera/point_cloud` 등) 겹친다** → 어떤 Edge가 `namespace:=''` 로 실행된 상태입니다. 기본 `auto` 면 `/cam_N/camera/...` 로 분리됩니다.
 - **멀티뷰에서 카메라별 point cloud 업데이트 속도가 다르다** → Host에서 `ros2 topic hz /cam_51/camera/point_cloud_rgb`, `ros2 topic hz /cam_52/camera/point_cloud_rgb` 처럼 실제 토픽 Hz를 비교하세요. 낮은 쪽 Edge의 드라이버 처리량이나 센서 상태부터 확인합니다.
+- **RViz가 몇 초 보이다가 멈춘다** → 먼저 `show_rgb_images:=false rviz_frame_rate:=10`으로 표시 부하를 낮춰 보세요. 동시에 `ros2 topic bw`가 계속 갱신되면 통신은 살아 있고 RViz 표시가 밀린 것입니다. `ip -s link`에서 RX dropped/error가 증가하거나 `ethtool` 속도가 100Mb/s로 보일 때만 케이블/스위치/포트 문제를 우선 의심합니다.
 
 ---
 

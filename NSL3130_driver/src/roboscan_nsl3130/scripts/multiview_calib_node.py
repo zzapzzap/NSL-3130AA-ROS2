@@ -45,6 +45,7 @@ import cv2
 import numpy as np
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 from sensor_msgs.msg import Image, PointCloud2
 from std_msgs.msg import Empty
 
@@ -177,6 +178,14 @@ SIZE_BY_ID = {REF_ID: 0.32}
 AUX_SIZE = 0.19
 
 
+def _sensor_qos(depth=1):
+    return QoSProfile(
+        history=QoSHistoryPolicy.KEEP_LAST,
+        depth=depth,
+        reliability=QoSReliabilityPolicy.BEST_EFFORT,
+    )
+
+
 def _size_of(tag_id):
     return SIZE_BY_ID.get(int(tag_id), AUX_SIZE)
 
@@ -214,7 +223,7 @@ class MultiviewCalibNode(Node):
         # cloud arrives we fall back to the image-topic-derived names above.
         self.live_lidar_frame = None
         cloud_topic = self._cloud_topic(args.image_topic)
-        self.create_subscription(PointCloud2, cloud_topic, self._cloud_cb, 1)
+        self.create_subscription(PointCloud2, cloud_topic, self._cloud_cb, _sensor_qos(1))
 
         # Depth refinement: snap the marker depth to the LiDAR-measured plane.
         # Monocular STag gives a good rotation + viewing ray but a weak metric depth
