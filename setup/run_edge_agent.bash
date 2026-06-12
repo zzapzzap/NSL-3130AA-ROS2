@@ -15,7 +15,8 @@ if [[ -f "${ws}/install/setup.bash" ]]; then
 fi
 if [[ -f "${runtime_env}" ]]; then
     source "${runtime_env}"
-elif [[ -f "${nsl_src}/setup/setup_dds_interface.bash" ]]; then
+fi
+if [[ -f "${nsl_src}/setup/setup_dds_interface.bash" ]]; then
     source "${nsl_src}/setup/setup_dds_interface.bash"
 fi
 set -u
