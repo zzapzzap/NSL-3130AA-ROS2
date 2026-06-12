@@ -484,9 +484,20 @@ class MultiviewCalibNode(Node):
         if abs(denom) < 1e-6:
             return t, {'status': 'marker edge-on (degenerate)'}
         t_corr = (d_pl / denom) * u
+        delta_m = float(np.linalg.norm(t_corr) - np.linalg.norm(c))
+        max_delta = float(getattr(self.a, 'max_depth_delta', 0.0))
+        if max_delta > 0.0 and abs(delta_m) > max_delta:
+            return t, {
+                'status': f'rejected large depth delta ({delta_m:+.3f} m > {max_delta:.3f} m)',
+                'delta_m': delta_m,
+                'plane_delta_m': float(d_pl - s0),
+                'depth_before_m': float(np.linalg.norm(c)),
+                'depth_after_m': float(np.linalg.norm(t_corr)),
+                'inliers': int(inl), 'used': k}
         return t_corr, {
             'status': 'ok',
-            'delta_m': float(np.linalg.norm(t_corr) - np.linalg.norm(c)),
+            'delta_m': delta_m,
+            'plane_delta_m': float(d_pl - s0),
             'depth_before_m': float(np.linalg.norm(c)),
             'depth_after_m': float(np.linalg.norm(t_corr)),
             'inliers': int(inl), 'used': k}
@@ -716,11 +727,14 @@ def main():
                     help='Topic the host broadcasts std_msgs/Empty on to start fleet calibration.')
     ap.add_argument('--depth-refine', default='true',
                     help='Snap marker depth onto the LiDAR plane via RANSAC (true/false)')
-    ap.add_argument('--depth-band', type=float, default=0.20,
+    ap.add_argument('--depth-band', type=float, default=0.50,
                     help='± depth band (m) around the 1st-pass marker plane for the LiDAR RANSAC')
-    ap.add_argument('--ransac-tol', type=float, default=0.10,
+    ap.add_argument('--ransac-tol', type=float, default=0.08,
                     help='RANSAC inlier tolerance (m): LiDAR points within this distance of the '
                          'consensus marker plane are inliers (capped at --depth-band)')
+    ap.add_argument('--max-depth-delta', type=float, default=0.40,
+                    help='Reject LiDAR depth refinement if the final camera-ray range correction exceeds '
+                         'this many meters. Set <=0 to disable.')
     args, ros_args = ap.parse_known_args()
     args.display = str(args.display).strip().lower() in ('true', '1', 'yes')
     args.depth_refine = str(args.depth_refine).strip().lower() in ('true', '1', 'yes')

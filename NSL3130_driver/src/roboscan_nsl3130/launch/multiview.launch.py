@@ -135,7 +135,8 @@ def _calib_actions(context):
              '--display',       LaunchConfiguration('use_gui').perform(context),
              '--depth-refine',  LaunchConfiguration('depth_refine').perform(context),
              '--depth-band',    LaunchConfiguration('depth_band').perform(context),
-             '--ransac-tol',    LaunchConfiguration('ransac_tol').perform(context)],
+             '--ransac-tol',    LaunchConfiguration('ransac_tol').perform(context),
+             '--max-depth-delta', LaunchConfiguration('max_depth_delta').perform(context)],
         output='screen')]
 
 
@@ -457,10 +458,12 @@ def generate_launch_description():
                         'true just adds the viewer + [s]save [r]reset [q]quit; it still auto-saves after duration.'),
         DeclareLaunchArgument('depth_refine', default_value='true',
             description='Per-tag LiDAR-plane RANSAC depth refine (needs extrinsic.yml)'),
-        DeclareLaunchArgument('depth_band', default_value='0.20',
+        DeclareLaunchArgument('depth_band', default_value='0.50',
             description='± depth band (m) around the 1st-pass marker plane for the LiDAR RANSAC'),
-        DeclareLaunchArgument('ransac_tol', default_value='0.10',
+        DeclareLaunchArgument('ransac_tol', default_value='0.08',
             description='RANSAC inlier tolerance (m) for the LiDAR marker-plane fit (capped at depth_band)'),
+        DeclareLaunchArgument('max_depth_delta', default_value='0.40',
+            description='Reject LiDAR depth refine when the final range correction exceeds this many meters; <=0 disables'),
 
         OpaqueFunction(function=_setup),
     ])
