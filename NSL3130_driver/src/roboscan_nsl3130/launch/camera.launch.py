@@ -127,43 +127,6 @@ def generate_launch_description():
         if not ip_octet:
             return
         lan_ip = f'192.168.0.{ip_octet}'
-        peer_spec = os.environ.get(
-            'NSL_DDS_INITIAL_PEERS',
-            f'{FLEET_FIRST_OCTET}-{HOST_LAST_OCTET}')
-
-        def _peer_octets(spec):
-            if not spec or spec.lower() in ('off', 'false', 'none'):
-                return []
-            peers = []
-            for part in re.split(r'[,\s]+', spec):
-                part = part.strip()
-                if not part:
-                    continue
-                m = re.match(r'^(\d+)-(\d+)$', part)
-                if m:
-                    start, end = int(m.group(1)), int(m.group(2))
-                    peers.extend(str(i) for i in range(start, end + 1))
-                    continue
-                m = re.match(r'^192\.168\.0\.(\d+)$', part)
-                if m:
-                    peers.append(m.group(1))
-                    continue
-                if part.isdigit():
-                    peers.append(part)
-            deduped = []
-            for peer in peers:
-                if peer not in deduped:
-                    deduped.append(peer)
-            return deduped
-
-        initial_peers = '\n'.join(
-            f'''                        <locator>
-                            <udpv4>
-                                <address>192.168.0.{peer}</address>
-                            </udpv4>
-                        </locator>'''
-            for peer in _peer_octets(peer_spec)
-        )
         ros_dir = os.path.join(os.path.expanduser('~'), '.ros')
         profile = os.path.join(ros_dir, 'fastdds_nsl.xml')
         os.makedirs(ros_dir, exist_ok=True)
@@ -175,7 +138,6 @@ def generate_launch_description():
             <transport_descriptor>
                 <transport_id>nsl_lan</transport_id>
                 <type>UDPv4</type>
-                <maxInitialPeersRange>40</maxInitialPeersRange>
                 <interfaceWhiteList>
                     <address>{lan_ip}</address>
                 </interfaceWhiteList>
@@ -187,19 +149,13 @@ def generate_launch_description():
                     <transport_id>nsl_lan</transport_id>
                 </userTransports>
                 <useBuiltinTransports>false</useBuiltinTransports>
-                <builtin>
-                    <initialPeersList>
-{initial_peers}
-                    </initialPeersList>
-                </builtin>
             </rtps>
         </participant>
     </profiles>
 </dds>
 ''')
         os.environ['FASTRTPS_DEFAULT_PROFILES_FILE'] = profile
-        os.environ['NSL_DDS_INITIAL_PEERS'] = peer_spec
-        print(f'[camera] FastDDS whitelist: {lan_ip}; initial peers={peer_spec}  ({profile})')
+        print(f'[camera] FastDDS whitelist: {lan_ip}  ({profile})')
 
     def _resolve_params_file(context, serial):
         """Pick the sensor-params file for the driver.

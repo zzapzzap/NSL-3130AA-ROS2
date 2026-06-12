@@ -557,12 +557,11 @@ bash ~/colcon_ws/src/NSL-3130AA-ROS2/setup/setup_fleet_edge.bash --host-only
 ```
 
 ROS 2 통신은 `192.168.0.x` 내부망만 쓰도록 제한됩니다. 카메라 전용 포트(`192.168.2.x`)나 `docker0`가 통신 경로에 섞이면
-`node list`에는 보이는데 포인트클라우드와 TF가 흐르지 않는 증상이 날 수 있습니다. 또한 공유기/스위치가 ROS 2 자동 발견 패킷을 막는 경우를 대비해 `192.168.0.51-70` 후보를 직접 peer로 넣습니다. 적용 상태는 아래처럼 확인합니다.
+`node list`에는 보이는데 포인트클라우드와 TF가 흐르지 않는 증상이 날 수 있습니다. 적용 상태는 아래처럼 확인합니다.
 
 ```bash
 echo $ROS_DOMAIN_ID
 echo $FASTRTPS_DEFAULT_PROFILES_FILE
-grep -n "192.168.0.51\\|192.168.0.61" "$FASTRTPS_DEFAULT_PROFILES_FILE"
 ```
 
 설정 후에는 실행 중인 ROS 2 프로세스를 다시 시작하세요.

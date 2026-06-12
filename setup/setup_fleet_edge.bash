@@ -91,7 +91,6 @@ write_runtime_env() {
         printf 'export ROS_LOCALHOST_ONLY=0\n'
         printf 'export NSL_FLEET_ROLE=%s\n' "$role"
         printf 'export NSL_HOST_IP=%s\n' "$host_ip"
-        printf 'export NSL_DDS_INITIAL_PEERS=%s-%s\n' "$fleet_first_octet" "$host_last_octet"
         printf 'export ROS_HUMANPOSE_WEIGHT_HOST=%s\n' "$host_ip"
         if [[ "$role" == "edge" && -n "$octet" ]]; then
             printf 'export NSL_EDGE_OCTET=%s\n' "$octet"
