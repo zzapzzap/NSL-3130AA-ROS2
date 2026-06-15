@@ -88,7 +88,12 @@ roboscanPublisher::roboscanPublisher() :
 
     RCLCPP_INFO(this->get_logger(), "start roboscanPublisher...\n");
     auto image_qos = rclcpp::QoS(rclcpp::KeepLast(5));
-    auto cloud_qos = rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile();
+    // Clouds go RELIABLE with a few-deep history so the host can recover the
+    // packets dropped by switch incast when 3 cameras burst at once (the LAN is
+    // <5% utilised, so retransmits are cheap). KeepLast(1) best_effort dropped
+    // the whole ~860-packet sample on any single loss -> 0.1 Hz stutter.
+    // Host/RViz subscribers must also request RELIABLE to get the retransmits.
+    auto cloud_qos = rclcpp::QoS(rclcpp::KeepLast(5)).reliable().durability_volatile();
 
     imgDistancePub = this->create_publisher<sensor_msgs::msg::Image>("roboscanDistance", image_qos);
     imgAmplPub = this->create_publisher<sensor_msgs::msg::Image>("roboscanAmpl", image_qos);

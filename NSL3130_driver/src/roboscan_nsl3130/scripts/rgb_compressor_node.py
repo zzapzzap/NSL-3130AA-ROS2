@@ -16,11 +16,16 @@ from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 from sensor_msgs.msg import CompressedImage, Image
 
 
-def _sensor_qos(depth=1):
+def _sensor_qos(depth=5):
+    # RELIABLE so the full (optionally 1080p) JPEG is reassembled losslessly at
+    # the host even when switch incast drops fragments; KeepLast(5) gives the
+    # writer room to retransmit before the slot is overwritten. The LAN is
+    # <5% utilised so the retransmits are cheap. RViz/host subscribers must also
+    # request RELIABLE (see multiview.launch.py Image display).
     return QoSProfile(
         history=QoSHistoryPolicy.KEEP_LAST,
         depth=depth,
-        reliability=QoSReliabilityPolicy.BEST_EFFORT,
+        reliability=QoSReliabilityPolicy.RELIABLE,
     )
 
 
@@ -64,7 +69,10 @@ class RgbCompressor(Node):
 
         out = CompressedImage()
         out.header = msg.header
-        out.format = f"jpeg; quality={self.quality}"
+        # compressed_image_transport's parser expects "<raw_encoding>; <codec>
+        # compressed <encoding>"; anything else (e.g. "jpeg; quality=80")
+        # crashes rviz2 with "Unknown encoding jpeg".
+        out.format = "bgr8; jpeg compressed bgr8"
         out.data = encoded.tobytes()
         self.pub.publish(out)
 

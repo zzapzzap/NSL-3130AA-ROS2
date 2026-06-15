@@ -239,9 +239,8 @@ def _camera_group(cam_id, color, show_rgb_image, cloud_topic_depth, cloud_filter
             Depth: 1
             Durability Policy: Volatile
             History Policy: Keep Last
-            Reliability Policy: Best Effort
-            Value: /cam_{cam_id}/camera/rgb/image_raw
-          Transport Hint: compressed
+            Reliability Policy: Reliable
+            Value: /cam_{cam_id}/camera/rgb/image_raw/compressed
           Value: true
 """
     return f"""\
@@ -273,7 +272,7 @@ def _camera_group(cam_id, color, show_rgb_image, cloud_topic_depth, cloud_filter
             Durability Policy: Volatile
             Filter size: {cloud_filter_size}
             History Policy: Keep Last
-            Reliability Policy: Best Effort
+            Reliability Policy: Reliable
             Value: /cam_{cam_id}/camera/point_cloud_rgb
           Use Fixed Frame: true
           Value: true
@@ -501,8 +500,9 @@ def generate_launch_description():
             description='RViz PointCloud2 topic queue depth. 1 keeps only the newest frame.'),
         DeclareLaunchArgument('cloud_filter_size', default_value='1',
             description='RViz PointCloud2 TF/message-filter queue size. 1 avoids backlog.'),
-        DeclareLaunchArgument('cloud_point_size_pixels', default_value='1',
-            description='RViz PointCloud2 point size in pixels. 1 is lightest for multi-camera.'),
+        DeclareLaunchArgument('cloud_point_size_pixels', default_value='3',
+            description='RViz PointCloud2 point size in pixels (default 3 = easier to see; '
+                        'lower to 1 for the lightest multi-camera view).'),
         DeclareLaunchArgument('rviz_frame_rate', default_value='15',
             description='RViz render frame rate cap. Lower values reduce GPU/CPU pressure.'),
         DeclareLaunchArgument('use_multiview_tf', default_value='false',

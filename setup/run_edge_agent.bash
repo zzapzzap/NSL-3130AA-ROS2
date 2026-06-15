@@ -88,9 +88,6 @@ fi
 sync_singleview_weight() {
     [[ "${ROS_HUMANPOSE_SYNC_WEIGHTS_ON_START:-1}" =~ ^(1|true|yes)$ ]] || return 0
     local octet="${ROS_HUMANPOSE_OCTET:-${NSL_EDGE_OCTET:-}}"
-    local host="${ROS_HUMANPOSE_WEIGHT_HOST:-${NSL_HOST_IP:-192.168.0.61}}"
-    local user_name="${ROS_HUMANPOSE_WEIGHT_USER:-${USER}}"
-    local remote_dir="${ROS_HUMANPOSE_WEIGHT_REMOTE_DIR:-~/colcon_ws/src/ros_humanpose/weight}"
     local local_dir="${ROS_HUMANPOSE_WEIGHT_LOCAL_DIR:-${pose_src}/weight}"
     if [[ -z "$octet" ]]; then
         octet="$(detect_edge_octet)"
@@ -99,12 +96,16 @@ sync_singleview_weight() {
     mkdir -p "$local_dir"
     local file="3d_pose_cam${octet}.pkl"
     local tmp="${local_dir}/.${file}.tmp"
-    echo "[edge-agent] sync weight ${user_name}@${host}:${remote_dir}/${file}"
-    if rsync -az --partial --timeout=10 "${user_name}@${host}:${remote_dir}/${file}" "$tmp"; then
+    # SSH-free: fetch from the host's weight server over ROS2
+    # (/fleet/weights/get, nsl-weight-server@.service on the host). No keys
+    # needed — a new edge only has to join the DDS domain.
+    echo "[edge-agent] fetch weight ${file} via /fleet/weights/get"
+    if ros2 run ros_humanpose weight_client.py get "$file" "$tmp" \
+            --wait "${ROS_HUMANPOSE_WEIGHT_WAIT_SEC:-15}"; then
         mv "$tmp" "${local_dir}/${file}"
     else
         rm -f "$tmp"
-        echo "[edge-agent] weight sync skipped; using local copy if present"
+        echo "[edge-agent] weight fetch skipped (weight server unreachable); using local copy if present"
     fi
 }
 
@@ -116,6 +117,11 @@ camera_args=(
     use_rqt:=false
     use_rgb_compressor:="${NSL_USE_RGB_COMPRESSOR:-true}"
     rgb_jpeg_quality:="${NSL_RGB_JPEG_QUALITY:-80}"
+    # Native 1920x1080 JPEG (no downscaling). The compressed image is RELIABLE
+    # (rgb_compressor_node.py): it is fragmented for the wire and reassembled
+    # losslessly at the host, so the full-resolution frame arrives complete for
+    # host-side image analysis. Set NSL_RGB_COMPRESSED_WIDTH only if you ever
+    # want a smaller panel; default keeps full res.
     rgb_compressed_width:="${NSL_RGB_COMPRESSED_WIDTH:-0}"
     rgb_compressed_frame_skip:="${NSL_RGB_COMPRESSED_FRAME_SKIP:-0}"
 )
