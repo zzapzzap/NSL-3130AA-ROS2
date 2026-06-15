@@ -35,6 +35,7 @@ Usage (normally via multiview_calib.launch.py):
 
 import argparse
 import datetime
+import json
 import os
 import sys
 import time
@@ -45,9 +46,9 @@ import cv2
 import numpy as np
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
+from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 from sensor_msgs.msg import Image, PointCloud2
-from std_msgs.msg import Empty
+from std_msgs.msg import Empty, String
 
 try:
     import stag
@@ -252,6 +253,20 @@ class MultiviewCalibNode(Node):
         if args.wait_trigger:
             self.create_subscription(Empty, args.trigger_topic, self._on_trigger, 10)
 
+        # OBSERVE channel: after each calibration, publish every per-tag observation as
+        # JSON on a latched topic so a host bundle solver can fuse all cameras into ONE
+        # globally-consistent frame (multi-tag bridge BA). RGB pose (R,t) is the primary
+        # signal; the LiDAR sliding+RANSAC depth rides along as a weak prior. Latched
+        # (TRANSIENT_LOCAL) so a solver that starts later still gets the last snapshot.
+        self.obs_pub = None
+        self.obs_topic = ''
+        if args.publish_observations:
+            obs_qos = QoSProfile(history=QoSHistoryPolicy.KEEP_LAST, depth=1,
+                                 reliability=QoSReliabilityPolicy.RELIABLE,
+                                 durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
+            self.obs_topic = f'/{self.ns}/tag_observations' if self.ns else '/tag_observations'
+            self.obs_pub = self.create_publisher(String, self.obs_topic, obs_qos)
+
         self.sub = self.create_subscription(Image, args.image_topic, self._cb, 1)
         if args.wait_trigger:
             mode = f'{args.duration:.0f}s window' if args.duration > 0 else f'{args.num_frames}-view'
@@ -377,13 +392,14 @@ class MultiviewCalibNode(Node):
                     continue
                 rvec, tvec, rmse = res
                 if rmse <= self.a.reproj_thresh:
-                    tag = self.tags.setdefault(mid, {'rv': [], 'tv': [], 'err': []})
+                    tag = self.tags.setdefault(mid, {'rv': [], 'tv': [], 'err': [], 'cpx': []})
                     # count-mode caps each tag at num_frames; duration-mode keeps every
                     # view in the time window so the median averages over all of them.
                     if self.a.duration > 0 or len(tag['rv']) < self.a.num_frames:
                         tag['rv'].append(rvec.reshape(3))
                         tag['tv'].append(tvec.reshape(3))
                         tag['err'].append(rmse)
+                        tag['cpx'].append(cpx.reshape(8))   # retained for the OBSERVE channel
                 cv2.drawFrameAxes(dbg, self.K, None, rvec, tvec, size * 0.5, 3)
             self._annotate(dbg)
 
@@ -705,6 +721,8 @@ class MultiviewCalibNode(Node):
 
         self._save(rid, results)
         self.saved = True
+        if self.obs_pub is not None:
+            self._publish_observations(rid, results)
         if self.a.display:
             try:
                 cv2.destroyAllWindows()
@@ -789,6 +807,60 @@ class MultiviewCalibNode(Node):
             f'  → {yml}  ({len(ids)} tags, ref id {rid})\n  → {summary}\n'
             f'  cam@marker=({t_mc[0]:+.3f},{t_mc[1]:+.3f},{t_mc[2]:+.3f}) m')
 
+    def _publish_observations(self, rid, results):
+        """Publish every per-tag observation as JSON on the latched OBSERVE topic.
+
+        This is the SOLVE input for the host multi-tag bundle solver: per tag we send the
+        RGB-derived pose (R,t; x_cam = R·x_marker + t) — the trusted signal — plus the
+        monocular t, reproj rmse, view count, mean corner pixels, and the LiDAR
+        sliding+RANSAC depth result as a *weak* depth prior. The host fuses every camera
+        through shared tags (bridges) into one consistent stag_marker frame.
+        """
+        ns, camera_frame, lidar_frame = self._resolve_frames()
+        tags = []
+        for mid in sorted(results):
+            r = results[mid]
+            cpx = self.tags.get(mid, {}).get('cpx', [])
+            corners = np.mean(np.asarray(cpx, np.float64), axis=0).tolist() if len(cpx) else []
+            rf = r.get('refine') or {}
+            depth = {'status': rf.get('status', 'off')}
+            if rf.get('status') == 'ok':
+                depth.update(method=rf.get('method', 'slide'),
+                             delta_m=float(rf['delta_m']),
+                             before_m=float(rf['depth_before_m']),
+                             after_m=float(rf['depth_after_m']),
+                             slide_depth_m=float(rf['slide_depth_m']),
+                             inliers=int(rf['inliers']), used=int(rf['used']),
+                             slide_points=int(rf['slide_points']))
+            tags.append({
+                'id': int(mid), 'size': float(r['size']),
+                'R': np.asarray(r['R'], np.float64).reshape(9).tolist(),
+                't': np.asarray(r['t'], np.float64).reshape(3).tolist(),
+                't_mono': np.asarray(r['t_mono'], np.float64).reshape(3).tolist(),
+                'rmse_px': float(r['rmse']), 'views': int(r['n']),
+                'corners_px': corners, 'depth': depth,
+            })
+        payload = {
+            'schema': 'nsl_tag_obs_v1',
+            'camera_id': self.serial, 'namespace': ns,
+            'camera_frame': camera_frame, 'lidar_frame': lidar_frame,
+            'reference_frame': 'stag_marker',
+            'library_hd': int(self.a.library_hd),
+            'marker_id': int(rid), 'marker_size': float(results[rid]['size']),
+            'image_width': int(self.w), 'image_height': int(self.h),
+            'fisheye': bool(self.fisheye),
+            'K': np.asarray(self.K, np.float64).reshape(9).tolist(),
+            'D': np.asarray(self.D, np.float64).reshape(-1).tolist(),
+            'stamp': time.time(),
+            'tags': tags,
+        }
+        out = String()
+        out.data = json.dumps(payload)
+        self.obs_pub.publish(out)
+        self.get_logger().info(
+            f'[observe] published {len(tags)} tag obs on {self.obs_topic} (ref id {rid}) '
+            f'→ host bundle solver can fuse this camera.')
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -823,6 +895,10 @@ def main():
                          'broadcast — no SSH/accounts. Default false (calibrate immediately).')
     ap.add_argument('--trigger-topic', default='/fleet/calibrate',
                     help='Topic the host broadcasts std_msgs/Empty on to start fleet calibration.')
+    ap.add_argument('--publish-observations', default='true',
+                    help='After each calibration, publish all per-tag observations as JSON on the '
+                         'latched /<ns>/tag_observations topic for the host multi-tag bundle solver '
+                         '(global cross-camera fusion). Default true; set false to calibrate silently.')
     ap.add_argument('--depth-refine', default='true',
                     help='Snap marker depth onto the LiDAR plane via RANSAC (true/false)')
     ap.add_argument('--depth-band', type=float, default=0.50,
@@ -851,6 +927,7 @@ def main():
     args.display = str(args.display).strip().lower() in ('true', '1', 'yes')
     args.depth_refine = str(args.depth_refine).strip().lower() in ('true', '1', 'yes')
     args.wait_trigger = str(args.wait_trigger).strip().lower() in ('true', '1', 'yes')
+    args.publish_observations = str(args.publish_observations).strip().lower() in ('true', '1', 'yes')
 
     rclpy.init(args=ros_args or None)
     try:

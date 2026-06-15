@@ -326,6 +326,16 @@ def generate_launch_description():
                      '--trigger-topic', LaunchConfiguration('trigger_topic').perform(context)],
                 output='screen'))
 
+        # Multiview WRITEBACK receiver: lets the host bundle solver push this edge its
+        # globally-solved multiview.yml (chunked + sha256); multiview_tf_node then re-publishes
+        # /tf_static on its mtime poll, so the global solution goes live with no SSH/restart.
+        if serial and _is_true(context, 'multiview_put_server'):
+            put_server = os.path.join(repo_scripts, 'multiview_put_server.py')
+            cmd = ['python3', put_server, '--camera-id', serial, '--calib-dir', calib_dir]
+            if ns:
+                cmd += ['--namespace', ns]
+            actions.append(ExecuteProcess(cmd=cmd, output='screen'))
+
         # rviz2 (config rewritten for the namespace so the bundled view still works)
         if _use_gui(context, 'use_rviz'):
             actions.append(Node(
@@ -368,6 +378,10 @@ def generate_launch_description():
             'calib_listener', default_value='true',
             description='Run an idle multiview-calibration listener that calibrates this camera on a '
                         'host /fleet/calibrate broadcast (one-touch fleet calib). Needs intrinsic.yml.'),
+        DeclareLaunchArgument(
+            'multiview_put_server', default_value='true',
+            description='Run the multiview writeback receiver (/cam_NN/multiview/put) so the host '
+                        'bundle solver can push this edge its globally-solved multiview.yml (no SSH).'),
         DeclareLaunchArgument(
             'trigger_topic', default_value='/fleet/calibrate',
             description='Topic the host broadcasts std_msgs/Empty on to trigger fleet calibration.'),
