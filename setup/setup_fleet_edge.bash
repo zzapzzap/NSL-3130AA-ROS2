@@ -103,19 +103,43 @@ write_runtime_env() {
     printf '[fleet] wrote runtime env: %s (%s)\n' "$env_file" "$role"
 }
 
-enable_edge_service() {
-    local user_name="${SUDO_USER:-${USER}}"
-    local unit_name="nsl-edge-agent@${user_name}.service"
-    local template="${setup_dir}/nsl-edge-agent.service"
-
-    [[ "${NSL_INSTALL_EDGE_SERVICE:-1}" =~ ^(1|true|yes)$ ]] || return 0
-    [[ -f "$template" ]] || return 0
-
-    sudo install -m 0644 "$template" /etc/systemd/system/nsl-edge-agent@.service
+# Install a systemd unit template and enable the instance.
+#   _install_unit <template-path> <target-file-in-/etc> <unit-to-enable>
+_install_unit() {
+    local tpl="$1" target="$2" unit="$3"
+    if [[ ! -f "$tpl" ]]; then
+        printf '[fleet] WARNING: unit template missing, skipped: %s\n' "$tpl" >&2
+        return 0
+    fi
+    sudo install -m 0644 "$tpl" "/etc/systemd/system/${target}"
     sudo systemctl daemon-reload
-    sudo systemctl enable "$unit_name"
-    printf '[fleet] enabled edge service: %s\n' "$unit_name"
-    printf '[fleet] start now: sudo systemctl start %s\n' "$unit_name"
+    sudo systemctl enable "$unit"
+    printf '[fleet] enabled: %s\n' "$unit"
+}
+
+enable_edge_service() {
+    [[ "${NSL_INSTALL_EDGE_SERVICE:-1}" =~ ^(1|true|yes)$ ]] || return 0
+    local user_name="${SUDO_USER:-${USER}}"
+    local rh_setup="${HOME}/colcon_ws/src/ros_humanpose/setup"
+    # 1) camera + single-view pose runtime
+    _install_unit "${setup_dir}/nsl-edge-agent.service" \
+        "nsl-edge-agent@.service" "nsl-edge-agent@${user_name}.service"
+    # 2) SSH-free training trigger listener — a SEPARATE unit on purpose, because
+    #    training stops nsl-edge-agent and a listener inside it would kill itself.
+    _install_unit "${rh_setup}/nsl-train-listener@.service" \
+        "nsl-train-listener@.service" "nsl-train-listener@${user_name}.service"
+    printf '[fleet] start now: sudo systemctl start nsl-edge-agent@%s nsl-train-listener@%s\n' \
+        "$user_name" "$user_name"
+}
+
+enable_host_service() {
+    [[ "${NSL_INSTALL_HOST_SERVICE:-1}" =~ ^(1|true|yes)$ ]] || return 0
+    local user_name="${SUDO_USER:-${USER}}"
+    local rh_setup="${HOME}/colcon_ws/src/ros_humanpose/setup"
+    # Host weight server: SSH-free weight get/put + /fleet/train_authority gate.
+    _install_unit "${rh_setup}/nsl-weight-server@.service" \
+        "nsl-weight-server@.service" "nsl-weight-server@${user_name}.service"
+    printf '[fleet] start now: sudo systemctl start nsl-weight-server@%s\n' "$user_name"
 }
 
 source_ros_setup() {
@@ -498,6 +522,7 @@ fi
 
 printf '[fleet] Runtime launch:\n'
 if [[ "$fleet_kind" == "host" ]]; then
+    enable_host_service
     printf '  ros2 launch roboscan_nsl3130 multiview.launch.py\n'
     printf '  ros2 launch roboscan_nsl3130 multiview.launch.py calibration:=true\n'
 else
