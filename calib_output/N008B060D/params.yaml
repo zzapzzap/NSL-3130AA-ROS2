@@ -1,20 +1,15 @@
-# Per-device sensor profile — N008B060D (dim unit: weak amplitude, no saturation)
-# Auto-loaded by camera.launch.py when this camera (USB serial) is connected.
-# Tuned for max FOV coverage on this dim device: very low MinAmplitude, filters off.
-# Edit live in rqt_reconfigure — saves back here.
 MaxDistance: 12500
 PointColud EDGE: 200
 ImageType: RGB_DISTANCE
 LensType: LENS_SF
 LidarAngle: 0
-IsReference: true
-HDRMode: HDR_None
-IntegrationTime3D: 350
-IntegrationTimeHdr1: 700
+HDRMode: HDR_Spatial
+IntegrationTime3D: 700
+IntegrationTimeHdr1: 150
 IntegrationTimeHdr2: 80
 IntegrationTimeGray: 100
 MinAmplitude: 2
-Modulation: MOD_12Mhz
+Modulation: MOD_24Mhz
 Channel: 0
 MedianFilter: true
 GaussianFilter: true
