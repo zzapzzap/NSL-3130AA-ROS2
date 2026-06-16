@@ -2,6 +2,7 @@
 
 import os
 import re
+import shlex
 import shutil
 import subprocess
 
@@ -317,13 +318,17 @@ def generate_launch_description():
         if serial and _is_true(context, 'calib_listener'):
             calib_node = os.path.join(repo_scripts, 'multiview_calib_node.py')
             img_topic = _abs_topic(ns, LaunchConfiguration('rgb_topic').perform(context))
+            cmd = ['python3', calib_node,
+                   '--camera-id',     serial,
+                   '--calib-dir',     calib_dir,
+                   '--image-topic',   img_topic,
+                   '--wait-trigger',  'true',
+                   '--trigger-topic', LaunchConfiguration('trigger_topic').perform(context)]
+            extra = LaunchConfiguration('calib_args').perform(context).strip()
+            if extra:
+                cmd += shlex.split(extra)
             actions.append(ExecuteProcess(
-                cmd=['python3', calib_node,
-                     '--camera-id',     serial,
-                     '--calib-dir',     calib_dir,
-                     '--image-topic',   img_topic,
-                     '--wait-trigger',  'true',
-                     '--trigger-topic', LaunchConfiguration('trigger_topic').perform(context)],
+                cmd=cmd,
                 output='screen'))
 
         # Multiview WRITEBACK receiver: lets the host bundle solver push this edge its
@@ -385,6 +390,10 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'trigger_topic', default_value='/fleet/calibrate',
             description='Topic the host broadcasts std_msgs/Empty on to trigger fleet calibration.'),
+        DeclareLaunchArgument(
+            'calib_args', default_value='',
+            description='Extra args appended to the idle multiview calibration listener, e.g. '
+                        'calib_args:="--max-depth-delta 0.45 --slide-search-radius 0.60"'),
         DeclareLaunchArgument(
             'connection', default_value='ethernet',
             description="'ethernet'=strict fleet runtime path with no USB fallback (DEFAULT); "

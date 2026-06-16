@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Edge-side WRITEBACK receiver for the multiview bundle solver.
 
-The host `multiview_bundle_node` solves every camera's pose globally, then pushes each edge its
+The host `multiview_solver_node` solves every camera's pose globally, then pushes each edge its
 solved `multiview.yml` here over the proven chunked + sha256 transfer (the same PutWeight service
 the weight server uses). The file is staged and installed **atomically** at
 `calib_output/{serial}/multiview.yml` only after the digest matches, so a crashed transfer can

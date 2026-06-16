@@ -80,6 +80,20 @@ ensure_runtime_env_source() {
     fi
 }
 
+ensure_fleet_tools_source() {
+    # HOST-only: source the fleet control aliases (mgp/mcb/mtr/mtf/mvw/mvp) from ~/.bashrc so a
+    # fresh host gets them one-touch. Idempotent: skip if any fleet_tools.sh source already exists.
+    local tools="${setup_dir}/fleet_tools.sh"
+    touch "${HOME}/.bashrc"
+    if grep -q 'fleet_tools\.sh' "${HOME}/.bashrc"; then
+        printf '[fleet] host aliases already sourced in ~/.bashrc (fleet_tools.sh)\n'
+        return 0
+    fi
+    printf '[ -f "%s" ] && source "%s"  # NSL fleet host aliases (mgp/mcb/mtr/mtf/mvw/mvp)\n' \
+        "$tools" "$tools" >> "${HOME}/.bashrc"
+    printf '[fleet] host aliases enabled in ~/.bashrc (fleet_tools.sh: mgp mcb mtr mtf mvw mvp)\n'
+}
+
 write_runtime_env() {
     local role="$1"
     local octet="${2:-}"
@@ -140,6 +154,7 @@ enable_host_service() {
     _install_unit "${rh_setup}/nsl-weight-server@.service" \
         "nsl-weight-server@.service" "nsl-weight-server@${user_name}.service"
     printf '[fleet] start now: sudo systemctl start nsl-weight-server@%s\n' "$user_name"
+    ensure_fleet_tools_source      # host fleet-control aliases (mgp/mcb/mtr/mtf/mvw/mvp)
 }
 
 source_ros_setup() {

@@ -136,7 +136,7 @@ install(PROGRAMS
   scripts/extrinsic_tf_node.py
   scripts/multiview_calib_node.py
   scripts/multiview_tf_node.py
-  scripts/multiview_bundle_node.py
+  scripts/multiview_solver_node.py
   scripts/multiview_put_server.py
   scripts/rgb_compressor_node.py
   scripts/verify_intrinsic.py

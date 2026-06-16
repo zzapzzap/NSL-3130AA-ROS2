@@ -144,6 +144,7 @@ def _calib_actions(context):
              '--depth-refine',  LaunchConfiguration('depth_refine').perform(context),
              '--depth-band',    LaunchConfiguration('depth_band').perform(context),
              '--ransac-tol',    LaunchConfiguration('ransac_tol').perform(context),
+             '--min-plane-inlier-ratio', LaunchConfiguration('min_plane_inlier_ratio').perform(context),
              '--max-depth-delta', LaunchConfiguration('max_depth_delta').perform(context),
              '--slide-crop-x',  LaunchConfiguration('slide_crop_x').perform(context),
              '--slide-crop-y',  LaunchConfiguration('slide_crop_y').perform(context),
@@ -151,7 +152,8 @@ def _calib_actions(context):
              '--slide-stride',  LaunchConfiguration('slide_stride').perform(context),
              '--slide-min-points', LaunchConfiguration('slide_min_points').perform(context),
              '--slide-min-range', LaunchConfiguration('slide_min_range').perform(context),
-             '--slide-max-range', LaunchConfiguration('slide_max_range').perform(context)],
+             '--slide-max-range', LaunchConfiguration('slide_max_range').perform(context),
+             '--slide-search-radius', LaunchConfiguration('slide_search_radius').perform(context)],
         output='screen')]
 
 
@@ -456,6 +458,23 @@ def _viewer_actions(context):
         actions.append(ExecuteProcess(
             cmd=['python3', tf_script, '--calib-dir', calib_dir, '--scan-all'], output='screen'))
 
+    # Host bundle solver — pinned here so ONE `mtf` (broadcast /fleet/calibrate) is a one-touch
+    # fleet recalibration while the viewer runs: it collects every edge's tag observations, runs
+    # the global bundle adjustment, and (writeback) pushes each solved multiview.yml back to its
+    # edge, whose multiview_tf_node then re-publishes /tf_static → RViz re-anchors live. Host-only
+    # (guarded) so an edge that happens to run the viewer never spawns a second solver.
+    if _is_true(context, 'solver') and _is_host_machine():
+        solver_script = os.path.join(_scripts_dir(), 'multiview_solver_node.py')
+        cmd = ['python3', solver_script,
+               '--trigger-topic', LaunchConfiguration('trigger_topic').perform(context)]
+        if _is_true(context, 'solver_writeback'):
+            cmd.append('--writeback')
+        extra = LaunchConfiguration('solver_args').perform(context).strip()
+        if extra:
+            import shlex
+            cmd += shlex.split(extra)
+        actions.append(ExecuteProcess(cmd=cmd, output='screen'))
+
     if _is_true(context, 'use_rviz'):
         rviz_node = Node(package='rviz2', executable='rviz2', name='multi_sensor_viewer',
                          arguments=['-d', rviz_config], output='screen')
@@ -483,6 +502,17 @@ def generate_launch_description():
                         '(calib_listener) calibrates its own camera at once. auto = host IP 192.168.0.61-70.'),
         DeclareLaunchArgument('trigger_topic', default_value='/fleet/calibrate',
             description='Topic the host broadcasts std_msgs/Empty on to start fleet calibration.'),
+        DeclareLaunchArgument('solver', default_value='true',
+            description='Run the host multi-tag bundle solver alongside the viewer (host machine '
+                        'only): it listens on trigger_topic, fuses every edge into stag_marker, and '
+                        'writes results back. This is what makes `mtf` a one-touch recalibration.'),
+        DeclareLaunchArgument('solver_writeback', default_value='true',
+            description='true → solver pushes each solved multiview.yml to its edge (live). '
+                        'false → dry-run: write under the solver out-dir only, do not touch edges.'),
+        DeclareLaunchArgument('solver_args', default_value='',
+            description='Extra args appended to the host bundle solver, e.g. '
+                        'solver_args:="--rot-angle-pow 2 --w-lidar 1.5 --lidar-gate 0.35" '
+                        'to relax heading or retune depth without editing code.'),
 
         # ── viewer options (calibration:=false) ──
         DeclareLaunchArgument('use_rviz', default_value='true',
@@ -533,7 +563,9 @@ def generate_launch_description():
             description='± depth band (m) for the LiDAR RANSAC/refinement crop'),
         DeclareLaunchArgument('ransac_tol', default_value='0.08',
             description='RANSAC inlier tolerance (m) for the LiDAR marker-plane fit (capped at depth_band)'),
-        DeclareLaunchArgument('max_depth_delta', default_value='0.0',
+        DeclareLaunchArgument('min_plane_inlier_ratio', default_value='0.40',
+            description='Reject LiDAR depth refine unless this fraction of the selected crop agrees with one plane'),
+        DeclareLaunchArgument('max_depth_delta', default_value='0.60',
             description='Reject LiDAR depth refine when the final range correction exceeds this many meters; <=0 disables'),
         DeclareLaunchArgument('slide_crop_x', default_value='0.50',
             description='Sliding mode: marker-frame left/right crop half-width in meters'),
@@ -549,6 +581,8 @@ def generate_launch_description():
             description='Sliding mode: minimum non-zero camera-ray range in meters'),
         DeclareLaunchArgument('slide_max_range', default_value='0.0',
             description='Sliding mode: optional maximum camera-ray range in meters; <=0 uses cloud max'),
+        DeclareLaunchArgument('slide_search_radius', default_value='0.80',
+            description='Sliding mode: only search this many meters around the monocular STag range; <=0 searches all cloud ranges'),
 
         OpaqueFunction(function=_setup),
     ])

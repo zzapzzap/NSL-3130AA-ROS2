@@ -36,6 +36,8 @@ ros2 launch roboscan_nsl3130 multiview.launch.py
 | 카메라 실행 | `ros2 launch roboscan_nsl3130 camera.launch.py` | 카메라별 params, 토픽 접두어, TF, RViz/rqt가 자동 적용됩니다 |
 | Edge headless 실행 | `ros2 launch roboscan_nsl3130 camera.launch.py use_rviz:=false use_rqt:=false` | Edge는 퍼블리시만 하고, 화면 표시는 Host에서 처리됩니다 |
 | Host multiview | `ros2 launch roboscan_nsl3130 multiview.launch.py` | 모든 Edge의 `/cam_N` 포인트클라우드가 `stag_marker` 기준으로 표시됩니다 |
+| Host 자동화 (여러 Edge 일괄) | `mgp` · `mcb` · `mtr` (호스트 alias) | 코드 미러 / 빌드+서비스 재시작 / 멀티 학습 — 자세히는 [6-7](#6-7-호스트-자동화-명령-fleet_toolssh) |
+| 멀티뷰 전역 정합 | `mvw` 띄우고 `mtf` 한 번 | 떠 있는 모든 Edge를 `stag_marker` 하나로 번들 정합(멀티태그) — 원리는 [docs/multiview_tf_solver.md](docs/multiview_tf_solver.md) |
 
 ### Host/Edge 규칙
 
@@ -484,6 +486,11 @@ ros2 launch roboscan_nsl3130 multiview.launch.py calibration:=True is_host:=true
 
 > 프레임 이름(`{ns}_lidar_frame` 등)은 **라이브 포인트클라우드의 실제 frame_id** 를 읽어 저장하므로, 캘리브를 어느 머신에서 돌리든 뷰어의 라이브 드라이버와 항상 일치합니다.
 
+> **호스트 전역 정합(멀티태그 번들 솔버)**: 위 per-Edge 캘리브를 마친 뒤, Host에서 `mvw`(뷰어 + 솔버)를
+> 띄우고 `mtf`를 한 번 쏘면, 여러 Edge의 태그 관측을 모아 **하나의 `stag_marker`로 전역 정합**(멀티태그
+> 브릿지 + IPPE flip 보정 + LiDAR 깊이 미세보정)한 뒤 각 Edge에 결과를 되돌려 씁니다. 단일 레퍼런스 태그가
+> 모든 뷰에 안 보여도 됩니다. 방식·튜닝 상세: **[docs/multiview_tf_solver.md](docs/multiview_tf_solver.md)**.
+
 > 결과 확인은 6-4의 `multiview.launch.py` 로 합니다(아래).
 
 ---
@@ -635,6 +642,61 @@ ros2 run tf2_tools view_frames                              # frames.pdf 로 전
 - **토픽이 접두어 없이(`/camera/point_cloud` 등) 겹친다** → 어떤 Edge가 `namespace:=''` 로 실행된 상태입니다. 기본 `auto` 면 `/cam_N/camera/...` 로 분리됩니다.
 - **멀티뷰에서 카메라별 point cloud 업데이트 속도가 다르다** → Host에서 `ros2 topic hz /cam_51/camera/point_cloud_rgb`, `ros2 topic hz /cam_52/camera/point_cloud_rgb` 처럼 실제 토픽 Hz를 비교하세요. 낮은 쪽 Edge의 드라이버 처리량이나 센서 상태부터 확인합니다.
 - **RViz가 몇 초 보이다가 멈춘다** → 먼저 `show_rgb_images:=false rviz_frame_rate:=10`으로 표시 부하를 낮춰 보세요. 동시에 `ros2 topic bw`가 계속 갱신되면 통신은 살아 있고 RViz 표시가 밀린 것입니다. `ip -s link`에서 RX dropped/error가 증가하거나 `ethtool` 속도가 100Mb/s로 보일 때만 케이블/스위치/포트 문제를 우선 의심합니다.
+
+### 6-7. 호스트 자동화 명령 (fleet_tools.sh)
+
+Host에서 여러 Edge를 한 번에 다루는 alias 모음입니다. `setup_fleet_edge.bash`(Host)가 `~/.bashrc`에
+`fleet_tools.sh` 를 자동 source하므로, 새 터미널을 열거나 `source ~/.bashrc` 후 바로 씁니다. 대상은
+`192.168.0.51-60` 중 **지금 켜져 있는 Edge**(Host는 자기 옥텟 자동 제외). `NSL_EDGES="51 52"` 로 한정 가능.
+
+| 명령 | 하는 일 |
+|---|---|
+| `mgp` | Host 코드를 온라인 Edge로 **미러**(rsync `--delete`). 각 Edge의 `calib_output/`·`weight/`·`dataset/`는 **보존** |
+| `mcb` | 각 Edge에서 `colcon build --symlink-install` 후 **서비스 재시작**(돌던 stream/pose 죽이고 새 코드·weight 로드) |
+| `mtr` | 멀티 학습 — `train.launch.py mode:=all` (Edge 단일뷰 학습 + Host 멀티뷰 학습) |
+| `mtf` | `/fleet/calibrate` 방송 → 각 Edge가 카메라를 `stag_marker`에 재앵커하고 결과 보고 |
+| `mvw` | 멀티뷰 RViz 뷰어 **+ Host 번들 솔버** (`multiview.launch.py`). 떠 있는 동안 `mtf` 한 방이면 전역 정합 |
+| `mvp` | 멀티뷰 pose fusion (`multiview_pose.launch.py`) |
+
+```bash
+# 코드 배포 흐름
+mgp && mcb
+
+# 멀티뷰 정합 (Host) — dry-run으로 먼저 확인 (엣지 안 건드림)
+mvw solver_writeback:=false
+mtf                        # 로그에서 카메라 위치 / rms / flip / 잔차 확인
+
+# 좋으면 라이브 (풀린 yml을 엣지로 push → /tf_static 자동 갱신)
+mvw
+mtf
+```
+
+**번들 솔버 튜닝** — `mvw solver_args:="…"` (코드 수정 없이):
+
+| 인자 | 기본 | 용도 |
+|---|---|---|
+| `--w-lidar` | `3.5` | 깊이(LiDAR) 미세보정 가중 — **LiDAR가 깊이를 주도**(원/근 작은 태그의 RGB 모노큘러 깊이보다 ToF 직접거리가 훨씬 안정적). 더 꽉 붙이려면 ↑(4~5), 평면 confidence로 태그별 자동 스케일 |
+| `--lidar-gate` | `1.0` m | LiDAR가 RGB/브릿지 예비해와 이 값 이상 다를 때만(=GROSS 오류) 폐기. 기본 관대(LiDAR 신뢰), confidence가 나머지 처리. 한 카메라가 평면을 엉뚱하게 잡으면 ↓(0.4~0.6) |
+| `--w-depth` | `0.5` | 모노큘러 약 fallback (`w_lidar`보다 낮게) |
+| `--rot-angle-pow` | `1.0` | grazing 뷰 heading 완화. 비스듬히 보는 카메라(예: 53)가 기울면 ↑(2~2.5) → bearing이 자세를 잡음 |
+| `--ref-id` | `7` | 최우선 앵커(메인) 태그. 나머지는 id 오름차순 |
+
+```bash
+# 예: 53번이 기울고 깊이가 튈 때
+mvw solver_args:="--rot-angle-pow 2.5 --w-lidar 1.5 --lidar-gate 0.35"
+```
+
+엣지 depth refine은 기본값이 **태그-lock**(슬라이딩 윈도우가 태그 0.3~0.4 m 뒤의 배경 벽/바닥에 붙는 것을
+방지)으로 조여져 있습니다: `--slide-search-radius 0.30`, `--max-depth-delta 0.35`. 어떤 태그가 정말로
+더 큰 보정이 필요하면 camera launch에 passthrough로 **느슨하게**:
+```bash
+ros2 launch roboscan_nsl3130 camera.launch.py \
+  calib_args:="--slide-search-radius 0.60 --max-depth-delta 0.50"
+```
+
+> **원리·메커니즘(인수인계)** 은 **[docs/multiview_tf_solver.md](docs/multiview_tf_solver.md)** — 왜 이렇게
+> 푸는지, 데이터 흐름, BA / flip-repair / depth-gate 알고리즘, 진단 로그 읽는 법, 코드 진입점이 정리돼 있습니다.
+> `mvp`(multiview_pose fusion)는 정합 확정 후 사용합니다.
 
 ---
 

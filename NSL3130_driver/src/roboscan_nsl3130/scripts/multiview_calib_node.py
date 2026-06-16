@@ -428,12 +428,16 @@ class MultiviewCalibNode(Node):
             self._finish('collected enough views (headless auto)')
 
     def _ref_id(self):
-        """Reference tag id: tag 7 if seen, else the most-collected tag (or None)."""
-        if REF_ID in self.tags:
-            return REF_ID
+        """Reference tag id by MAIN-TAG PRIORITY (id 7 → 0 → 1 → …): the big reference tag (7) if
+        seen, else the LOWEST visible id. Deterministic so every camera picks the SAME main — no
+        more cameras landing on different refs. (Prefer tags with enough views; fall back so a
+        camera that only saw a high-id tag still saves. The host bundle solver re-anchors globally
+        anyway, but this keeps the per-edge calibration consistent with the priority too.)"""
         if not self.tags:
             return None
-        return max(self.tags, key=lambda k: len(self.tags[k]['rv']))
+        enough = [t for t in self.tags if len(self.tags[t]['rv']) >= self.a.min_frames]
+        pool = enough or list(self.tags)
+        return REF_ID if REF_ID in pool else min(pool)
 
     def _ref_count(self):
         rid = self._ref_id()
@@ -522,6 +526,10 @@ class MultiviewCalibNode(Node):
         user_max = float(getattr(self.a, 'slide_max_range', 0.0))
         if user_max > 0.0:
             r_max = min(r_max, user_max)
+        search_radius = float(getattr(self.a, 'slide_search_radius', 0.0))
+        if search_radius > 0.0:
+            r_min = max(r_min, depth0 - search_radius)
+            r_max = min(r_max, depth0 + search_radius)
         if r_max <= r_min:
             return t, {'status': f'invalid slide range ({r_min:.3f}, {r_max:.3f})'}
 
@@ -562,8 +570,11 @@ class MultiviewCalibNode(Node):
             return t, {'status': f'only {k} LiDAR pts in selected sliding crop'}
 
         z_pl, inl = _ransac_offset(qz, tol=min(float(self.a.ransac_tol), max(float(self.a.depth_band), z_band)))
-        if inl < max(15, int(0.3 * k)):
-            return t, {'status': f'weak sliding plane ({inl}/{k} inliers)'}
+        inlier_ratio = float(inl) / float(max(1, k))
+        min_ratio = max(0.0, min(1.0, float(getattr(self.a, 'min_plane_inlier_ratio', 0.40))))
+        min_inliers = max(15, int(np.ceil(min_ratio * k)))
+        if inl < min_inliers:
+            return t, {'status': f'weak sliding plane ({inl}/{k} inliers, need {min_ratio:.2f})'}
 
         lam_corr = lam0 + float(z_pl) / float(v[2])
         if lam_corr <= min_range:
@@ -582,10 +593,16 @@ class MultiviewCalibNode(Node):
                 'depth_before_m': depth0,
                 'depth_after_m': float(lam_corr),
                 'inliers': int(inl), 'used': k,
+                'inlier_ratio': inlier_ratio,
                 'slide_points': int(slide_count),
                 'slide_med_abs_z_m': float(slide_med_abs_z),
                 'slide_range_min_m': r_min,
                 'slide_range_max_m': r_max}
+
+        plane_band = max(float(self.a.depth_band), z_band, 1e-6)
+        plane_tight = max(0.05, min(1.0, 1.0 - float(slide_med_abs_z) / plane_band))
+        support_conf = min(1.0, float(slide_count) / float(max(1, min_pts * 2)))
+        confidence = max(0.05, min(1.0, inlier_ratio * np.sqrt(support_conf) * plane_tight))
 
         return t_corr, {
             'status': 'ok',
@@ -596,6 +613,8 @@ class MultiviewCalibNode(Node):
             'depth_before_m': depth0,
             'depth_after_m': float(lam_corr),
             'inliers': int(inl), 'used': k,
+            'inlier_ratio': inlier_ratio,
+            'confidence': float(confidence),
             'slide_points': int(slide_count),
             'slide_med_abs_z_m': float(slide_med_abs_z),
             'slide_range_min_m': r_min,
@@ -831,6 +850,8 @@ class MultiviewCalibNode(Node):
                              after_m=float(rf['depth_after_m']),
                              slide_depth_m=float(rf['slide_depth_m']),
                              inliers=int(rf['inliers']), used=int(rf['used']),
+                             inlier_ratio=float(rf.get('inlier_ratio', 0.0)),
+                             confidence=float(rf.get('confidence', 1.0)),
                              slide_points=int(rf['slide_points']))
             tags.append({
                 'id': int(mid), 'size': float(r['size']),
@@ -906,9 +927,13 @@ def main():
     ap.add_argument('--ransac-tol', type=float, default=0.08,
                     help='RANSAC inlier tolerance (m): LiDAR points within this distance of the '
                          'consensus marker plane are inliers (capped at --depth-band)')
-    ap.add_argument('--max-depth-delta', type=float, default=0.0,
+    ap.add_argument('--min-plane-inlier-ratio', type=float, default=0.40,
+                    help='Reject a LiDAR marker plane unless this fraction of the selected crop is '
+                         'consistent with one plane. Higher values distrust noisy depth more.')
+    ap.add_argument('--max-depth-delta', type=float, default=0.35,
                     help='Reject LiDAR depth refinement if the final camera-ray range correction exceeds '
-                         'this many meters. Set <=0 to disable.')
+                         'this many meters — keeps the slide from jumping to a background wall/floor '
+                         'behind the tag. Set <=0 to disable.')
     ap.add_argument('--slide-crop-x', type=float, default=0.50,
                     help='Sliding mode: marker-frame left/right crop half-width in meters')
     ap.add_argument('--slide-crop-y', type=float, default=0.10,
@@ -923,6 +948,10 @@ def main():
                     help='Sliding mode: minimum non-zero camera-ray range in meters')
     ap.add_argument('--slide-max-range', type=float, default=0.0,
                     help='Sliding mode: optional maximum camera-ray range in meters; <=0 uses cloud max')
+    ap.add_argument('--slide-search-radius', type=float, default=0.30,
+                    help='Sliding mode: only search this many meters before/after the monocular STag '
+                         'range. Tight on purpose so the window stays ON the tag and cannot lock onto a '
+                         'background wall/floor ~0.3-0.4 m behind it; <=0 searches all ranges.')
     args, ros_args = ap.parse_known_args()
     args.display = str(args.display).strip().lower() in ('true', '1', 'yes')
     args.depth_refine = str(args.depth_refine).strip().lower() in ('true', '1', 'yes')
