@@ -458,9 +458,9 @@ def _viewer_actions(context):
         actions.append(ExecuteProcess(
             cmd=['python3', tf_script, '--calib-dir', calib_dir, '--scan-all'], output='screen'))
 
-    # Host bundle solver — pinned here so ONE `mtf` (broadcast /fleet/calibrate) is a one-touch
+    # Host deterministic chain solver — pinned here so ONE `mtf` (broadcast /fleet/calibrate) is a one-touch
     # fleet recalibration while the viewer runs: it collects every edge's tag observations, runs
-    # the global bundle adjustment, and (writeback) pushes each solved multiview.yml back to its
+    # the priority tag/camera chain, and (writeback) pushes each solved multiview.yml back to its
     # edge, whose multiview_tf_node then re-publishes /tf_static → RViz re-anchors live. Host-only
     # (guarded) so an edge that happens to run the viewer never spawns a second solver.
     if _is_true(context, 'solver') and _is_host_machine():
@@ -503,16 +503,16 @@ def generate_launch_description():
         DeclareLaunchArgument('trigger_topic', default_value='/fleet/calibrate',
             description='Topic the host broadcasts std_msgs/Empty on to start fleet calibration.'),
         DeclareLaunchArgument('solver', default_value='true',
-            description='Run the host multi-tag bundle solver alongside the viewer (host machine '
-                        'only): it listens on trigger_topic, fuses every edge into stag_marker, and '
+            description='Run the host deterministic multi-tag chain solver alongside the viewer '
+                        '(host machine only): it listens on trigger_topic, fuses every edge into stag_marker, and '
                         'writes results back. This is what makes `mtf` a one-touch recalibration.'),
         DeclareLaunchArgument('solver_writeback', default_value='true',
             description='true → solver pushes each solved multiview.yml to its edge (live). '
                         'false → dry-run: write under the solver out-dir only, do not touch edges.'),
         DeclareLaunchArgument('solver_args', default_value='',
-            description='Extra args appended to the host bundle solver, e.g. '
-                        'solver_args:="--rot-angle-pow 2 --w-lidar 1.5 --lidar-gate 0.35" '
-                        'to relax heading or retune depth without editing code.'),
+            description='Extra args appended to the host chain solver, e.g. '
+                        'solver_args:="--ref-id 0 --depth-vote-range 0.8" '
+                        'to retune deterministic linking/depth voting without editing code.'),
 
         # ── viewer options (calibration:=false) ──
         DeclareLaunchArgument('use_rviz', default_value='true',
@@ -563,10 +563,10 @@ def generate_launch_description():
             description='± depth band (m) for the LiDAR RANSAC/refinement crop'),
         DeclareLaunchArgument('ransac_tol', default_value='0.08',
             description='RANSAC inlier tolerance (m) for the LiDAR marker-plane fit (capped at depth_band)'),
-        DeclareLaunchArgument('min_plane_inlier_ratio', default_value='0.40',
-            description='Reject LiDAR depth refine unless this fraction of the selected crop agrees with one plane'),
-        DeclareLaunchArgument('max_depth_delta', default_value='0.60',
-            description='Reject LiDAR depth refine when the final range correction exceeds this many meters; <=0 disables'),
+        DeclareLaunchArgument('min_plane_inlier_ratio', default_value='0.0',
+            description='Reject LiDAR depth refine unless this fraction of the selected crop agrees with one plane; 0 keeps only absolute support'),
+        DeclareLaunchArgument('max_depth_delta', default_value='0.0',
+            description='Reject LiDAR depth refine when the final range correction exceeds this many meters; 0 disables so large pulls are visible'),
         DeclareLaunchArgument('slide_crop_x', default_value='0.50',
             description='Sliding mode: marker-frame left/right crop half-width in meters'),
         DeclareLaunchArgument('slide_crop_y', default_value='0.10',
@@ -581,8 +581,8 @@ def generate_launch_description():
             description='Sliding mode: minimum non-zero camera-ray range in meters'),
         DeclareLaunchArgument('slide_max_range', default_value='0.0',
             description='Sliding mode: optional maximum camera-ray range in meters; <=0 uses cloud max'),
-        DeclareLaunchArgument('slide_search_radius', default_value='0.80',
-            description='Sliding mode: only search this many meters around the monocular STag range; <=0 searches all cloud ranges'),
+        DeclareLaunchArgument('slide_search_radius', default_value='0.0',
+            description='Sliding mode: only search this many meters around the monocular STag range; 0 searches all cloud ranges'),
 
         OpaqueFunction(function=_setup),
     ])

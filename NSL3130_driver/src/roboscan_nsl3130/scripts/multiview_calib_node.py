@@ -19,7 +19,7 @@ missing/unreadable.
 Outputs (serial = camera USB serial, the same key intrinsic/extrinsic use):
 
     calib_output/{serial}/multiview.yml          ← canonical R|t + metadata
-    calib_output/{serial}/multiview/             ← debug images + summary
+    calib_output/{serial}/multiview/             ← summary
 
 The camera intrinsics are read from calib_output/{serial}/intrinsic.yml.  The
 NSL-3130 RGB lens is fisheye/equidistant, so corner pixels are undistorted with
@@ -242,7 +242,6 @@ class MultiviewCalibNode(Node):
         self.tags = {}
         self.saved = False
         self.frame_count = 0
-        self.last_save_dbg = -1
         self._collect_start = None   # monotonic time the reference tag was first seen (duration mode)
         self._last_save_time = None  # monotonic time of the last save (fleet trigger cooldown)
 
@@ -254,9 +253,10 @@ class MultiviewCalibNode(Node):
             self.create_subscription(Empty, args.trigger_topic, self._on_trigger, 10)
 
         # OBSERVE channel: after each calibration, publish every per-tag observation as
-        # JSON on a latched topic so a host bundle solver can fuse all cameras into ONE
-        # globally-consistent frame (multi-tag bridge BA). RGB pose (R,t) is the primary
-        # signal; the LiDAR sliding+RANSAC depth rides along as a weak prior. Latched
+        # JSON on a latched topic so the host deterministic chain solver can fuse all
+        # cameras into ONE shared frame. RGB pose (R,t) is the primary signal; the
+        # LiDAR sliding+RANSAC range rides along so the host can rigidly pull the
+        # linked camera cluster along the selected tag ray. Latched
         # (TRANSIENT_LOCAL) so a solver that starts later still gets the last snapshot.
         self.obs_pub = None
         self.obs_topic = ''
@@ -361,7 +361,6 @@ class MultiviewCalibNode(Node):
         self.tags.clear()
         self._clouds.clear()
         self._collect_start = None
-        self.last_save_dbg = -1
         self.saved = False
         self.armed = not idle
 
@@ -404,7 +403,6 @@ class MultiviewCalibNode(Node):
             self._annotate(dbg)
 
         self._hud(dbg)
-        self._maybe_dump_debug(dbg)
 
         if self.a.display:
             self._show(dbg)          # viewer + [s]save [r]reset [q]quit (early/abort)
@@ -431,8 +429,8 @@ class MultiviewCalibNode(Node):
         """Reference tag id by MAIN-TAG PRIORITY (id 7 → 0 → 1 → …): the big reference tag (7) if
         seen, else the LOWEST visible id. Deterministic so every camera picks the SAME main — no
         more cameras landing on different refs. (Prefer tags with enough views; fall back so a
-        camera that only saw a high-id tag still saves. The host bundle solver re-anchors globally
-        anyway, but this keeps the per-edge calibration consistent with the priority too.)"""
+        camera that only saw a high-id tag still saves. The host chain solver re-anchors globally
+        anyway, but this keeps the per-edge calibration deterministic too.)"""
         if not self.tags:
             return None
         enough = [t for t in self.tags if len(self.tags[t]['rv']) >= self.a.min_frames]
@@ -571,7 +569,7 @@ class MultiviewCalibNode(Node):
 
         z_pl, inl = _ransac_offset(qz, tol=min(float(self.a.ransac_tol), max(float(self.a.depth_band), z_band)))
         inlier_ratio = float(inl) / float(max(1, k))
-        min_ratio = max(0.0, min(1.0, float(getattr(self.a, 'min_plane_inlier_ratio', 0.40))))
+        min_ratio = max(0.0, min(1.0, float(getattr(self.a, 'min_plane_inlier_ratio', 0.0))))
         min_inliers = max(15, int(np.ceil(min_ratio * k)))
         if inl < min_inliers:
             return t, {'status': f'weak sliding plane ({inl}/{k} inliers, need {min_ratio:.2f})'}
@@ -585,7 +583,9 @@ class MultiviewCalibNode(Node):
         max_delta = float(getattr(self.a, 'max_depth_delta', 0.0))
         if max_delta > 0.0 and abs(delta_m) > max_delta:
             return t, {
-                'status': f'rejected large depth delta ({delta_m:+.3f} m > {max_delta:.3f} m)',
+                'status': f'kept RGB depth (LiDAR plane {delta_m:+.3f} m vs RGB exceeds the '
+                          f'{max_delta:.3f} m cap → background, not a tag surface; expected for a '
+                          f'grazing view, harmless — the multiview solver sets the final depth)',
                 'method': 'slide',
                 'delta_m': delta_m,
                 'slide_depth_m': float(lam0),
@@ -667,14 +667,6 @@ class MultiviewCalibNode(Node):
         cv2.putText(dbg, line, (10, dbg.shape[0] - 15),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
-    def _maybe_dump_debug(self, dbg):
-        # save a debug frame roughly every `num_frames`/6 reference captures, capped
-        every = max(1, self.a.num_frames // 6)
-        n = self._ref_count()
-        if n > 0 and n != self.last_save_dbg and n % every == 0:
-            self.last_save_dbg = n
-            cv2.imwrite(str(self.out_dir / f'detect_{n:03d}.png'), dbg)
-
     def _show(self, dbg):
         try:
             disp = dbg
@@ -696,7 +688,6 @@ class MultiviewCalibNode(Node):
     def _reset_collection(self):
         self.tags.clear()
         self._clouds.clear()
-        self.last_save_dbg = -1
         self.get_logger().info('[reset] cleared all tags — re-aim the markers, then [s]')
 
     def _finish(self, reason: str):
@@ -829,11 +820,12 @@ class MultiviewCalibNode(Node):
     def _publish_observations(self, rid, results):
         """Publish every per-tag observation as JSON on the latched OBSERVE topic.
 
-        This is the SOLVE input for the host multi-tag bundle solver: per tag we send the
+        This is the SOLVE input for the host deterministic chain solver: per tag we send the
         RGB-derived pose (R,t; x_cam = R·x_marker + t) — the trusted signal — plus the
         monocular t, reproj rmse, view count, mean corner pixels, and the LiDAR
-        sliding+RANSAC depth result as a *weak* depth prior. The host fuses every camera
-        through shared tags (bridges) into one consistent stag_marker frame.
+        sliding+RANSAC depth result. The host fuses cameras through shared tags
+        (bridges) and applies the linking tag's depth correction rigidly to that camera's
+        whole tag cluster.
         """
         ns, camera_frame, lidar_frame = self._resolve_frames()
         tags = []
@@ -880,7 +872,7 @@ class MultiviewCalibNode(Node):
         self.obs_pub.publish(out)
         self.get_logger().info(
             f'[observe] published {len(tags)} tag obs on {self.obs_topic} (ref id {rid}) '
-            f'→ host bundle solver can fuse this camera.')
+            f'→ host chain solver can fuse this camera.')
 
 
 def main():
@@ -918,7 +910,7 @@ def main():
                     help='Topic the host broadcasts std_msgs/Empty on to start fleet calibration.')
     ap.add_argument('--publish-observations', default='true',
                     help='After each calibration, publish all per-tag observations as JSON on the '
-                         'latched /<ns>/tag_observations topic for the host multi-tag bundle solver '
+                         'latched /<ns>/tag_observations topic for the host multi-tag chain solver '
                          '(global cross-camera fusion). Default true; set false to calibrate silently.')
     ap.add_argument('--depth-refine', default='true',
                     help='Snap marker depth onto the LiDAR plane via RANSAC (true/false)')
@@ -927,13 +919,12 @@ def main():
     ap.add_argument('--ransac-tol', type=float, default=0.08,
                     help='RANSAC inlier tolerance (m): LiDAR points within this distance of the '
                          'consensus marker plane are inliers (capped at --depth-band)')
-    ap.add_argument('--min-plane-inlier-ratio', type=float, default=0.40,
+    ap.add_argument('--min-plane-inlier-ratio', type=float, default=0.0,
                     help='Reject a LiDAR marker plane unless this fraction of the selected crop is '
-                         'consistent with one plane. Higher values distrust noisy depth more.')
-    ap.add_argument('--max-depth-delta', type=float, default=0.35,
+                         'consistent with one plane. 0 keeps only the absolute inlier-count check.')
+    ap.add_argument('--max-depth-delta', type=float, default=0.0,
                     help='Reject LiDAR depth refinement if the final camera-ray range correction exceeds '
-                         'this many meters — keeps the slide from jumping to a background wall/floor '
-                         'behind the tag. Set <=0 to disable.')
+                         'this many meters. Default 0 disables this cap so large depth pulls are visible.')
     ap.add_argument('--slide-crop-x', type=float, default=0.50,
                     help='Sliding mode: marker-frame left/right crop half-width in meters')
     ap.add_argument('--slide-crop-y', type=float, default=0.10,
@@ -948,10 +939,9 @@ def main():
                     help='Sliding mode: minimum non-zero camera-ray range in meters')
     ap.add_argument('--slide-max-range', type=float, default=0.0,
                     help='Sliding mode: optional maximum camera-ray range in meters; <=0 uses cloud max')
-    ap.add_argument('--slide-search-radius', type=float, default=0.30,
+    ap.add_argument('--slide-search-radius', type=float, default=0.0,
                     help='Sliding mode: only search this many meters before/after the monocular STag '
-                         'range. Tight on purpose so the window stays ON the tag and cannot lock onto a '
-                         'background wall/floor ~0.3-0.4 m behind it; <=0 searches all ranges.')
+                         'range. Default 0 searches all positive cloud ranges.')
     args, ros_args = ap.parse_known_args()
     args.display = str(args.display).strip().lower() in ('true', '1', 'yes')
     args.depth_refine = str(args.depth_refine).strip().lower() in ('true', '1', 'yes')
