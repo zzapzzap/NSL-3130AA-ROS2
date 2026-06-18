@@ -3,13 +3,13 @@ PointColud EDGE: 200
 ImageType: RGB_DISTANCE
 LensType: LENS_SF
 LidarAngle: 0
-HDRMode: HDR_Spatial
-IntegrationTime3D: 700
-IntegrationTimeHdr1: 150
+HDRMode: HDR_None
+IntegrationTime3D: 350
+IntegrationTimeHdr1: 700
 IntegrationTimeHdr2: 80
 IntegrationTimeGray: 100
 MinAmplitude: 2
-Modulation: MOD_24Mhz
+Modulation: MOD_12Mhz
 Channel: 0
 MedianFilter: true
 GaussianFilter: true

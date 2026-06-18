@@ -282,6 +282,8 @@ class BundleSolver:
                 base_ts[tid] = np.asarray(tg.get('t_mono', chosen[tid][1]), float).reshape(3).copy()
             d_link = base_ts[link] / (np.linalg.norm(base_ts[link]) + 1e-12)
             s, ninl, depth_source = 0.0, 0, 'rgb'
+            link_rgb_m = float(np.linalg.norm(base_ts[link]))
+            link_lidar_m = ob['tags'][link].get('range_lidar')
 
             if ci in clouds:
                 s, ninl = self._depth_vote_rigid(clouds[ci], list(base_ts.values()), d_link)
@@ -308,6 +310,8 @@ class BundleSolver:
                 'flips': flips,
                 'depth_source': depth_source,
                 'depth_shift_m': round(float(s), 3),
+                'link_rgb_m': round(link_rgb_m, 3),
+                'link_lidar_m': None if link_lidar_m is None else round(float(link_lidar_m), 3),
                 'cloud_inliers': int(ninl),
             }
         return cp, tp, info, sorted(set(range(len(observations))) - remaining), set(tp)
@@ -474,9 +478,11 @@ def run_node(args):
                 star = ' ★anchor' if tid == res['anchor'] else (' (bridge)' if len(cams) >= 2 else '')
                 self.get_logger().info(f'    id{tid}: {", ".join(cams)}{star}')
             for cam_id, inf in res.get('chain', {}).items():
+                lidar = 'none' if inf["link_lidar_m"] is None else f'{inf["link_lidar_m"]:.3f}'
                 self.get_logger().info(
                     f'    chain {cam_id}: link=id{inf["link"]} shared={inf["shared"]} '
                     f'added={inf["added"]} depth={inf["depth_source"]} '
+                    f'link_range={inf["link_rgb_m"]:.3f}->{lidar}m '
                     f'shift={inf["depth_shift_m"]:+.3f}m inliers={inf["cloud_inliers"]} '
                     f'flips={inf["flips"]}')
             if res['isolated_cams']:

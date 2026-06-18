@@ -130,9 +130,27 @@ Edge depth refine:
 
 | 인자 | 기본값 | 용도 |
 |---|---:|---|
+| `--depth-band` | `0.05` | RANSAC/refinement crop의 marker plane normal 방향 반두께 |
 | `--slide-search-radius` | `0.0` | `0`이면 positive cloud range 전체를 탐색. 양수면 RGB depth 주변으로 제한 |
 | `--max-depth-delta` | `0.0` | `0`이면 큰 depth correction rejection 비활성화 |
 | `--min-plane-inlier-ratio` | `0.0` | `0`이면 절대 inlier count만 확인 |
+| `--slide-crop-x` | `0.35` | marker-frame x 방향 ROI 반폭 |
+| `--slide-crop-y` | `0.35` | marker-frame y 방향 ROI 반폭 |
+| `--slide-z-band` | `0.05` | marker plane normal 방향 ROI 반두께 |
+| `--debug-roi` | `false` | tag별 sliding ROI 박스와 선택된 LiDAR 점을 RViz 토픽으로 발행 |
+| `--debug-roi-max-points` | `3000` | tag별 ROI debug point 최대 개수 |
+
+ROI 디버그를 켜면 edge calibration listener가 저장 시점의 snapshot을 latched topic으로 남긴다.
+
+- `/cam_NN/multiview_debug/roi_markers`
+- `/cam_NN/multiview_debug/roi_points`
+
+edge 서비스에서 켤 때는 해당 edge의 `~/.ros/nsl_runtime.env`에
+`export NSL_CALIB_ARGS="--debug-roi true"`를 넣고 서비스를 재시작한다.
+
+`mvw`의 각 카메라 그룹에는 위 토픽 display가 기본으로 들어간다. 파란 박스는 RGB monocular pose,
+주황 박스는 sliding window가 고른 depth, 초록/빨강 박스는 RANSAC refine 결과다.
+노란 점들은 실제 선택된 3D ROI 안의 LiDAR 점이다. id0 link가 사람/바닥/배경을 잡으면 여기서 바로 보인다.
 
 ---
 

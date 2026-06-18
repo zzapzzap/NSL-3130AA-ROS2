@@ -125,6 +125,9 @@ camera_args=(
     rgb_compressed_width:="${NSL_RGB_COMPRESSED_WIDTH:-0}"
     rgb_compressed_frame_skip:="${NSL_RGB_COMPRESSED_FRAME_SKIP:-0}"
 )
+if [[ -n "${NSL_CALIB_ARGS:-}" ]]; then
+    camera_args+=(calib_args:="${NSL_CALIB_ARGS}")
+fi
 
 pose_args=(
     namespace:="${NSL_EDGE_NAMESPACE:-auto}"

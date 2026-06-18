@@ -20,6 +20,7 @@
   <depend>std_msgs</depend>
   <depend>pcl_conversions</depend>
   <depend>sensor_msgs</depend>
+  <depend>visualization_msgs</depend>
   <!-- multiview_put_server / multiview_bundle_node reuse ros_humanpose's PutWeight srv -->
   <exec_depend>ros_humanpose</exec_depend>
   <exec_depend>rviz_default_plugins</exec_depend>

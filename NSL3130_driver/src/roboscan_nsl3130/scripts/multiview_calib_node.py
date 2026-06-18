@@ -37,6 +37,7 @@ import argparse
 import datetime
 import json
 import os
+import struct
 import sys
 import time
 from collections import deque
@@ -47,8 +48,10 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
-from sensor_msgs.msg import Image, PointCloud2
-from std_msgs.msg import Empty, String
+from geometry_msgs.msg import Point
+from sensor_msgs.msg import Image, PointCloud2, PointField
+from std_msgs.msg import Empty, Header, String
+from visualization_msgs.msg import Marker, MarkerArray
 
 try:
     import stag
@@ -187,6 +190,15 @@ def _sensor_qos(depth=1):
     )
 
 
+def _latched_qos(depth=1):
+    return QoSProfile(
+        history=QoSHistoryPolicy.KEEP_LAST,
+        depth=depth,
+        reliability=QoSReliabilityPolicy.RELIABLE,
+        durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+    )
+
+
 def _size_of(tag_id):
     return SIZE_BY_ID.get(int(tag_id), AUX_SIZE)
 
@@ -261,11 +273,20 @@ class MultiviewCalibNode(Node):
         self.obs_pub = None
         self.obs_topic = ''
         if args.publish_observations:
-            obs_qos = QoSProfile(history=QoSHistoryPolicy.KEEP_LAST, depth=1,
-                                 reliability=QoSReliabilityPolicy.RELIABLE,
-                                 durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
             self.obs_topic = f'/{self.ns}/tag_observations' if self.ns else '/tag_observations'
-            self.obs_pub = self.create_publisher(String, self.obs_topic, obs_qos)
+            self.obs_pub = self.create_publisher(String, self.obs_topic, _latched_qos(1))
+
+        self.roi_marker_pub = None
+        self.roi_points_pub = None
+        self.roi_marker_topic = ''
+        self.roi_points_topic = ''
+        self._roi_debug = {}
+        if args.debug_roi:
+            base = f'/{self.ns}/multiview_debug' if self.ns else '/multiview_debug'
+            self.roi_marker_topic = f'{base}/roi_markers'
+            self.roi_points_topic = f'{base}/roi_points'
+            self.roi_marker_pub = self.create_publisher(MarkerArray, self.roi_marker_topic, _latched_qos(1))
+            self.roi_points_pub = self.create_publisher(PointCloud2, self.roi_points_topic, _latched_qos(1))
 
         self.sub = self.create_subscription(Image, args.image_topic, self._cb, 1)
         if args.wait_trigger:
@@ -273,6 +294,8 @@ class MultiviewCalibNode(Node):
             self.get_logger().info(
                 f'[fleet] idle — waiting for {args.trigger_topic} '
                 f'(then headless {mode} median calib for {self.serial}).')
+        debug_line = (f'\n  roi-debug: {self.roi_marker_topic}, {self.roi_points_topic}'
+                      if args.debug_roi else '')
         self.get_logger().info(
             f'[multiview_calib] serial={self.serial}  topic={args.image_topic}\n'
             f'  HD{args.library_hd}  multi-tag (id {REF_ID}=0.32 m REFERENCE, others=0.19 m aux)\n'
@@ -280,7 +303,8 @@ class MultiviewCalibNode(Node):
             f'{self.w}x{self.h}\n'
             f'  {f"collecting {args.duration:.0f}s then median-average" if args.duration > 0 else f"collecting {args.num_frames} good views"} '
             f'→ {self.dev_dir/"multiview.yml"}\n'
-            f'  display={"on — viewer + [s]save [r]reset [q]quit" if args.display else "off (headless one-touch)"}')
+            f'  display={"on — viewer + [s]save [r]reset [q]quit" if args.display else "off (headless one-touch)"}'
+            f'{debug_line}')
 
     # ---- setup ----------------------------------------------------------------
 
@@ -484,14 +508,14 @@ class MultiviewCalibNode(Node):
             return None, {'status': 'no finite LiDAR points'}
         return pts_c, None
 
-    def _refine_depth(self, R, t, marker_size):
+    def _refine_depth(self, R, t, marker_size, tag_id=None):
         """Find marker range by sliding a marker-frame crop along the camera ray.
 
         The STag rotation and camera-to-marker ray are treated as reliable. Depth is
         searched over the non-zero LiDAR range interval along that ray. At each
         candidate range, LiDAR points are expressed in the candidate marker frame
         and scored by how many fall inside a marker-aligned crop:
-          x: +/- slide_crop_x, y: +/- slide_crop_y, z: +/- slide_z_band.
+          x/y: +/- slide_crop_{x,y}, z: +/- slide_z_band.
         The best window is then refined by a 1-D RANSAC on marker-frame z.
         """
         pts_c, err = self._cloud_points_camera()
@@ -537,6 +561,39 @@ class MultiviewCalibNode(Node):
         z_band = max(1e-3, float(self.a.slide_z_band))
         min_pts = int(self.a.slide_min_points)
 
+        def remember(status, lam0=None, lam_corr=None, pts_roi=None, inliers=0, used=0,
+                     slide_count=0, slide_med_abs_z=0.0):
+            if not self.a.debug_roi or tag_id is None:
+                return
+            pts_dbg = np.empty((0, 3), dtype=np.float32)
+            if pts_roi is not None and len(pts_roi):
+                pts_dbg = np.asarray(pts_roi, dtype=np.float32).reshape(-1, 3)
+                max_pts = max(0, int(getattr(self.a, 'debug_roi_max_points', 3000)))
+                if max_pts > 0 and pts_dbg.shape[0] > max_pts:
+                    idx = np.linspace(0, pts_dbg.shape[0] - 1, max_pts).astype(int)
+                    pts_dbg = pts_dbg[idx]
+            self._roi_debug[int(tag_id)] = {
+                'status': str(status),
+                'R': R.copy(),
+                't_mono': c.copy(),
+                'marker_size': float(marker_size),
+                'depth0': float(depth0),
+                'lam0': None if lam0 is None else float(lam0),
+                'lam_corr': None if lam_corr is None else float(lam_corr),
+                'u': u.copy(),
+                'crop_x': float(crop_x),
+                'crop_y': float(crop_y),
+                'z_band': float(z_band),
+                'depth_band': float(self.a.depth_band),
+                'r_min': float(r_min),
+                'r_max': float(r_max),
+                'points': pts_dbg,
+                'inliers': int(inliers),
+                'used': int(used),
+                'slide_count': int(slide_count),
+                'slide_med_abs_z': float(slide_med_abs_z),
+            }
+
         best = None
         for lam in np.arange(r_min, r_max + 0.5 * stride, stride):
             q = pts_m0 - lam * v
@@ -555,6 +612,10 @@ class MultiviewCalibNode(Node):
 
         if best is None or best[2] < min_pts:
             found = 0 if best is None else best[2]
+            remember(f'weak sliding-window support ({found}/{min_pts} pts)',
+                     lam0=None if best is None else best[1],
+                     slide_count=found,
+                     slide_med_abs_z=0.0 if best is None else best[3])
             return t, {'status': f'weak sliding-window support ({found}/{min_pts} pts)'}
 
         _, lam0, slide_count, slide_med_abs_z = best
@@ -565,6 +626,9 @@ class MultiviewCalibNode(Node):
         qz = q[crop, 2]
         k = int(qz.shape[0])
         if k < min_pts:
+            remember(f'only {k} LiDAR pts in selected sliding crop',
+                     lam0=lam0, pts_roi=pts_c[crop], used=k,
+                     slide_count=slide_count, slide_med_abs_z=slide_med_abs_z)
             return t, {'status': f'only {k} LiDAR pts in selected sliding crop'}
 
         z_pl, inl = _ransac_offset(qz, tol=min(float(self.a.ransac_tol), max(float(self.a.depth_band), z_band)))
@@ -572,16 +636,27 @@ class MultiviewCalibNode(Node):
         min_ratio = max(0.0, min(1.0, float(getattr(self.a, 'min_plane_inlier_ratio', 0.0))))
         min_inliers = max(15, int(np.ceil(min_ratio * k)))
         if inl < min_inliers:
+            remember(f'weak sliding plane ({inl}/{k} inliers, need {min_ratio:.2f})',
+                     lam0=lam0, pts_roi=pts_c[crop], inliers=inl, used=k,
+                     slide_count=slide_count, slide_med_abs_z=slide_med_abs_z)
             return t, {'status': f'weak sliding plane ({inl}/{k} inliers, need {min_ratio:.2f})'}
 
         lam_corr = lam0 + float(z_pl) / float(v[2])
         if lam_corr <= min_range:
+            remember(f'invalid refined depth ({lam_corr:.3f} m)',
+                     lam0=lam0, lam_corr=lam_corr, pts_roi=pts_c[crop],
+                     inliers=inl, used=k, slide_count=slide_count,
+                     slide_med_abs_z=slide_med_abs_z)
             return t, {'status': f'invalid refined depth ({lam_corr:.3f} m)'}
 
         t_corr = lam_corr * u
         delta_m = float(lam_corr - depth0)
         max_delta = float(getattr(self.a, 'max_depth_delta', 0.0))
         if max_delta > 0.0 and abs(delta_m) > max_delta:
+            remember(f'kept RGB depth; LiDAR delta {delta_m:+.3f} m exceeds cap',
+                     lam0=lam0, lam_corr=lam_corr, pts_roi=pts_c[crop],
+                     inliers=inl, used=k, slide_count=slide_count,
+                     slide_med_abs_z=slide_med_abs_z)
             return t, {
                 'status': f'kept RGB depth (LiDAR plane {delta_m:+.3f} m vs RGB exceeds the '
                           f'{max_delta:.3f} m cap → background, not a tag surface; expected for a '
@@ -604,6 +679,10 @@ class MultiviewCalibNode(Node):
         support_conf = min(1.0, float(slide_count) / float(max(1, min_pts * 2)))
         confidence = max(0.05, min(1.0, inlier_ratio * np.sqrt(support_conf) * plane_tight))
 
+        remember('ok', lam0=lam0, lam_corr=lam_corr, pts_roi=pts_c[crop],
+                 inliers=inl, used=k, slide_count=slide_count,
+                 slide_med_abs_z=slide_med_abs_z)
+
         return t_corr, {
             'status': 'ok',
             'method': 'slide',
@@ -619,6 +698,158 @@ class MultiviewCalibNode(Node):
             'slide_med_abs_z_m': float(slide_med_abs_z),
             'slide_range_min_m': r_min,
             'slide_range_max_m': r_max}
+
+    def _publish_roi_debug(self, rid, results):
+        if self.roi_marker_pub is None or not self._roi_debug:
+            return
+        ns, camera_frame, _lidar_frame = self._resolve_frames()
+        stamp = self.get_clock().now().to_msg()
+
+        arr = MarkerArray()
+        clear = Marker()
+        clear.header.frame_id = camera_frame
+        clear.header.stamp = stamp
+        clear.action = Marker.DELETEALL
+        arr.markers.append(clear)
+
+        point_rows = []
+        colors = [
+            (255, 64, 64), (64, 220, 255), (255, 220, 64), (120, 255, 120),
+            (220, 120, 255), (255, 150, 64), (180, 180, 255), (255, 255, 255),
+        ]
+
+        def rgb_float(rgb):
+            packed = (int(rgb[0]) << 16) | (int(rgb[1]) << 8) | int(rgb[2])
+            return struct.unpack('f', struct.pack('I', packed))[0]
+
+        for row, mid in enumerate(sorted(self._roi_debug)):
+            dbg = self._roi_debug[mid]
+            R = np.asarray(dbg['R'], np.float64).reshape(3, 3)
+            t_mono = np.asarray(dbg['t_mono'], np.float64).reshape(3)
+            u = np.asarray(dbg['u'], np.float64).reshape(3)
+            lam0 = dbg.get('lam0')
+            lam_corr = dbg.get('lam_corr')
+            tag_result = results.get(mid, {})
+            ok = bool(tag_result.get('refine') and tag_result['refine'].get('status') == 'ok')
+            base = row * 10
+
+            def add_cube(marker_id, name, center, sx, sy, sz, rgba):
+                m = Marker()
+                m.header.frame_id = camera_frame
+                m.header.stamp = stamp
+                m.ns = f'tag_{mid}_{name}'
+                m.id = marker_id
+                m.type = Marker.CUBE
+                m.action = Marker.ADD
+                m.frame_locked = True
+                m.pose.position.x = float(center[0])
+                m.pose.position.y = float(center[1])
+                m.pose.position.z = float(center[2])
+                q = _rotmat_to_quat(R)
+                m.pose.orientation.x = float(q[0])
+                m.pose.orientation.y = float(q[1])
+                m.pose.orientation.z = float(q[2])
+                m.pose.orientation.w = float(q[3])
+                m.scale.x = max(0.01, float(sx))
+                m.scale.y = max(0.01, float(sy))
+                m.scale.z = max(0.01, float(sz))
+                m.color.r, m.color.g, m.color.b, m.color.a = [float(v) for v in rgba]
+                arr.markers.append(m)
+
+            def add_label(marker_id, center):
+                rf = tag_result.get('refine') or {}
+                depth0 = dbg.get('depth0', 0.0)
+                after = rf.get('depth_after_m', lam_corr if lam_corr is not None else lam0)
+                if after is None:
+                    after = depth0
+                delta = (float(after) - float(depth0)) if after is not None else 0.0
+                m = Marker()
+                m.header.frame_id = camera_frame
+                m.header.stamp = stamp
+                m.ns = f'tag_{mid}_label'
+                m.id = marker_id
+                m.type = Marker.TEXT_VIEW_FACING
+                m.action = Marker.ADD
+                m.frame_locked = True
+                label_pos = np.asarray(center, np.float64) + R @ np.array([0.0, dbg['crop_y'] + 0.08, 0.08])
+                m.pose.position.x = float(label_pos[0])
+                m.pose.position.y = float(label_pos[1])
+                m.pose.position.z = float(label_pos[2])
+                m.pose.orientation.w = 1.0
+                m.scale.z = 0.08
+                m.color.r = 1.0
+                m.color.g = 1.0
+                m.color.b = 1.0
+                m.color.a = 1.0
+                tag = ' REF' if mid == rid else ''
+                m.text = (f'id{mid}{tag} {dbg["status"]}\\n'
+                          f'{depth0:.3f}->{float(after):.3f}m d={delta:+.3f}\\n'
+                          f'slide={dbg["slide_count"]} plane={dbg["inliers"]}/{dbg["used"]}')
+                arr.markers.append(m)
+
+            def add_ray(marker_id):
+                m = Marker()
+                m.header.frame_id = camera_frame
+                m.header.stamp = stamp
+                m.ns = f'tag_{mid}_ray'
+                m.id = marker_id
+                m.type = Marker.LINE_LIST
+                m.action = Marker.ADD
+                m.frame_locked = True
+                m.scale.x = 0.012
+                m.color.r = 1.0
+                m.color.g = 1.0
+                m.color.b = 0.0
+                m.color.a = 0.9
+                for a, b in ((np.zeros(3), t_mono),
+                             (t_mono, u * lam0 if lam0 is not None else t_mono),
+                             (u * lam0 if lam0 is not None else t_mono,
+                              u * lam_corr if lam_corr is not None else
+                              (u * lam0 if lam0 is not None else t_mono))):
+                    p0 = Point(x=float(a[0]), y=float(a[1]), z=float(a[2]))
+                    p1 = Point(x=float(b[0]), y=float(b[1]), z=float(b[2]))
+                    m.points.extend([p0, p1])
+                arr.markers.append(m)
+
+            sx = 2.0 * dbg['crop_x']
+            sy = 2.0 * dbg['crop_y']
+            z_slide = 2.0 * dbg['z_band']
+            z_refine = 2.0 * max(dbg['z_band'], dbg['depth_band'])
+            add_cube(base + 1, 'mono', t_mono, sx, sy, z_slide, (0.0, 0.35, 1.0, 0.18))
+            if lam0 is not None:
+                add_cube(base + 2, 'slide', u * float(lam0), sx, sy, z_slide, (1.0, 0.55, 0.0, 0.22))
+            final_lam = lam_corr if lam_corr is not None else lam0
+            if final_lam is not None:
+                color = (0.0, 1.0, 0.25, 0.28) if ok else (1.0, 0.0, 0.0, 0.28)
+                final_center = u * float(final_lam)
+                add_cube(base + 3, 'refined', final_center, sx, sy, z_refine, color)
+                add_label(base + 4, final_center)
+            else:
+                add_label(base + 4, t_mono)
+            add_ray(base + 5)
+
+            pts = np.asarray(dbg.get('points', []), dtype=np.float32).reshape(-1, 3)
+            if pts.size:
+                rgb = rgb_float(colors[row % len(colors)])
+                point_rows.extend((float(p[0]), float(p[1]), float(p[2]), rgb) for p in pts)
+
+        self.roi_marker_pub.publish(arr)
+        if self.roi_points_pub is not None and _pc2 is not None:
+            hdr = Header()
+            hdr.stamp = stamp
+            hdr.frame_id = camera_frame
+            fields = [
+                PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
+                PointField(name='y', offset=4, datatype=PointField.FLOAT32, count=1),
+                PointField(name='z', offset=8, datatype=PointField.FLOAT32, count=1),
+                PointField(name='rgb', offset=12, datatype=PointField.FLOAT32, count=1),
+            ]
+            msg = _pc2.create_cloud(hdr, fields, point_rows)
+            self.roi_points_pub.publish(msg)
+        self.get_logger().info(
+            f'[roi-debug] published {len(self._roi_debug)} tag ROI boxes on '
+            f'{self.roi_marker_topic} and selected points on {self.roi_points_topic} '
+            f'(frame={camera_frame}, ns={ns})')
 
     def _select_marker(self, ids):
         ids = np.asarray(ids).reshape(-1)
@@ -701,6 +932,7 @@ class MultiviewCalibNode(Node):
 
         # average + LiDAR-RANSAC depth-refine for every sufficiently-seen tag
         results = {}
+        self._roi_debug = {}
         for mid, tag in self.tags.items():
             if len(tag['rv']) < self.a.min_frames:
                 continue
@@ -710,7 +942,7 @@ class MultiviewCalibNode(Node):
             size = _size_of(mid)
             refine = None
             if self.a.depth_refine:
-                t_ref, refine = self._refine_depth(R, t_mono, size)
+                t_ref, refine = self._refine_depth(R, t_mono, size, tag_id=mid)
                 if refine.get('status') == 'ok':
                     t = t_ref
             results[mid] = dict(R=R, t=t, t_mono=t_mono, size=size,
@@ -730,6 +962,7 @@ class MultiviewCalibNode(Node):
                 f'reproj {results[mid]["rmse"]:.2f}px  {depth_msg}')
 
         self._save(rid, results)
+        self._publish_roi_debug(rid, results)
         self.saved = True
         if self.obs_pub is not None:
             self._publish_observations(rid, results)
@@ -914,7 +1147,7 @@ def main():
                          '(global cross-camera fusion). Default true; set false to calibrate silently.')
     ap.add_argument('--depth-refine', default='true',
                     help='Snap marker depth onto the LiDAR plane via RANSAC (true/false)')
-    ap.add_argument('--depth-band', type=float, default=0.50,
+    ap.add_argument('--depth-band', type=float, default=0.05,
                     help='± depth band (m) for the LiDAR RANSAC/refinement crop')
     ap.add_argument('--ransac-tol', type=float, default=0.08,
                     help='RANSAC inlier tolerance (m): LiDAR points within this distance of the '
@@ -925,11 +1158,11 @@ def main():
     ap.add_argument('--max-depth-delta', type=float, default=0.0,
                     help='Reject LiDAR depth refinement if the final camera-ray range correction exceeds '
                          'this many meters. Default 0 disables this cap so large depth pulls are visible.')
-    ap.add_argument('--slide-crop-x', type=float, default=0.50,
+    ap.add_argument('--slide-crop-x', type=float, default=0.35,
                     help='Sliding mode: marker-frame left/right crop half-width in meters')
-    ap.add_argument('--slide-crop-y', type=float, default=0.10,
+    ap.add_argument('--slide-crop-y', type=float, default=0.35,
                     help='Sliding mode: marker-frame up/down crop half-height in meters')
-    ap.add_argument('--slide-z-band', type=float, default=0.12,
+    ap.add_argument('--slide-z-band', type=float, default=0.05,
                     help='Sliding mode: count points within this marker-frame z distance from the plane')
     ap.add_argument('--slide-stride', type=float, default=0.10,
                     help='Sliding mode: camera-ray range stride in meters')
@@ -942,11 +1175,17 @@ def main():
     ap.add_argument('--slide-search-radius', type=float, default=0.0,
                     help='Sliding mode: only search this many meters before/after the monocular STag '
                          'range. Default 0 searches all positive cloud ranges.')
+    ap.add_argument('--debug-roi', default='false',
+                    help='Publish RViz debug topics showing each tag sliding ROI and selected LiDAR '
+                         'points: /<ns>/multiview_debug/roi_markers and roi_points.')
+    ap.add_argument('--debug-roi-max-points', type=int, default=3000,
+                    help='Maximum selected LiDAR points to publish per tag ROI debug snapshot.')
     args, ros_args = ap.parse_known_args()
     args.display = str(args.display).strip().lower() in ('true', '1', 'yes')
     args.depth_refine = str(args.depth_refine).strip().lower() in ('true', '1', 'yes')
     args.wait_trigger = str(args.wait_trigger).strip().lower() in ('true', '1', 'yes')
     args.publish_observations = str(args.publish_observations).strip().lower() in ('true', '1', 'yes')
+    args.debug_roi = str(args.debug_roi).strip().lower() in ('true', '1', 'yes')
 
     rclpy.init(args=ros_args or None)
     try:

@@ -696,6 +696,7 @@ void roboscanPublisher::publishCalibratedRgbCloud(
 
     const int xMin = frame->roiXMin;
     const int yMin = frame->roiYMin;
+    const double maxDistanceMm = static_cast<double>(viewerParam.maxDistance);
     const double* Rd = calib_.R.ptr<double>();
     const double* td = calib_.tvec.ptr<double>();
 
@@ -715,7 +716,8 @@ void roboscanPublisher::publishCalibratedRgbCloud(
         for (int x = 0; x < frame->width; ++x) {
             const int col = x + xMin;
             const double zv = zrow[col];
-            if (zv >= NSL_LIMIT_FOR_VALID_DATA) continue;
+            if (zv <= 0.0 || zv >= NSL_LIMIT_FOR_VALID_DATA ||
+                (maxDistanceMm > 0.0 && zv > maxDistanceMm)) continue;
 
             const double lx =  zv        / 1000.0;
             const double ly = -xrow[col] / 1000.0;
@@ -1308,10 +1310,15 @@ void roboscanPublisher::publishFrame(NslPCD *frame, NslVec3b *rgbframe)
 		
 		for (int y = 0; y < frame->height; ++y) {
 			for (int x = 0; x < frame->width; ++x) {
-				result.push_back(static_cast<uint8_t>(frame->distance2D[y+yMin][x+xMin] & 0xFF));		 // LSB
-				result.push_back(static_cast<uint8_t>((frame->distance2D[y+yMin][x+xMin] >> 8) & 0xFF)); // MSB
+				const int distance = frame->distance2D[y+yMin][x+xMin];
+				const uint16_t depth_mm =
+					(distance > 0 && distance < NSL_LIMIT_FOR_VALID_DATA &&
+					 (viewerParam.maxDistance <= 0 || distance <= viewerParam.maxDistance))
+						? static_cast<uint16_t>(distance) : 0;
+				result.push_back(static_cast<uint8_t>(depth_mm & 0xFF));		 // LSB
+				result.push_back(static_cast<uint8_t>((depth_mm >> 8) & 0xFF)); // MSB
 
-				setMatrixColor(distanceMat, x+xMin, y+yMin, nsl_getDistanceColor(frame->distance2D[y+yMin][x+xMin]));
+				setMatrixColor(distanceMat, x+xMin, y+yMin, nsl_getDistanceColor(distance));
 			}
 		}
 
@@ -1442,10 +1449,12 @@ void roboscanPublisher::publishFrame(NslPCD *frame, NslVec3b *rgbframe)
 			for(int x = 0; x < frame->width; x++, index++)
 			{
 				pcl::PointXYZI &point = cloud->points[index];
+				const double depth = frame->distance3D[OUT_Z][y+yMin][x+xMin];
 
-				if( frame->distance3D[OUT_Z][y+yMin][x+xMin] < NSL_LIMIT_FOR_VALID_DATA )
+				if( depth > 0.0 && depth < NSL_LIMIT_FOR_VALID_DATA &&
+					(viewerParam.maxDistance <= 0 || depth <= viewerParam.maxDistance) )
 				{
-					point.x = (double)(frame->distance3D[OUT_Z][y+yMin][x+xMin]/1000);
+					point.x = (double)(depth/1000);
 					point.y = (double)(-frame->distance3D[OUT_X][y+yMin][x+xMin]/1000);
 					point.z = (double)(-frame->distance3D[OUT_Y][y+yMin][x+xMin]/1000);
 					point.intensity = frame->amplitude[y+yMin][x+xMin];
@@ -1490,10 +1499,12 @@ void roboscanPublisher::publishFrame(NslPCD *frame, NslVec3b *rgbframe)
 					for(int x = 0; x < frame->width; x++, index++)
 					{
 						pcl::PointXYZRGB &pt = cloudRgb->points[index];
+						const double depth = frame->distance3D[OUT_Z][y+yMin][x+xMin];
 
-						if( frame->distance3D[OUT_Z][y+yMin][x+xMin] < NSL_LIMIT_FOR_VALID_DATA )
+						if( depth > 0.0 && depth < NSL_LIMIT_FOR_VALID_DATA &&
+							(viewerParam.maxDistance <= 0 || depth <= viewerParam.maxDistance) )
 						{
-							pt.x = (double)(frame->distance3D[OUT_Z][y+yMin][x+xMin]/1000);
+							pt.x = (double)(depth/1000);
 							pt.y = (double)(-frame->distance3D[OUT_X][y+yMin][x+xMin]/1000);
 							pt.z = (double)(-frame->distance3D[OUT_Y][y+yMin][x+xMin]/1000);
 

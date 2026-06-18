@@ -393,7 +393,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'calib_args', default_value='',
             description='Extra args appended to the idle multiview calibration listener, e.g. '
-                        'calib_args:="--max-depth-delta 0.45 --slide-search-radius 0.60"'),
+                        'calib_args:="--debug-roi true --max-depth-delta 0.45 --slide-search-radius 0.60"'),
         DeclareLaunchArgument(
             'connection', default_value='ethernet',
             description="'ethernet'=strict fleet runtime path with no USB fallback (DEFAULT); "

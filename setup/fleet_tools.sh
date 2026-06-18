@@ -8,6 +8,10 @@
 #                            (those are per-edge / huge / distributed separately).
 #   mcb        multi build+restart — colcon build --symlink-install on each edge, THEN restart
 #                            its services (kills running stream/pose → reloads code + weights).
+#   msb        multi service restart — sudo systemctl restart EVERY edge's services, NO rebuild.
+#                            Fast "reload all" for config/calib/weight changes (e.g. a re-written
+#                            calib_output/{serial}/extrinsic.yml). Same restart step as mcb, minus
+#                            the colcon build. (Edges only — the host mvw/solver is interactive.)
 #   mtr        multi training — mode:=all. Edge single-view train restarts the edge runtime
 #                            (new weight) + host multi-view train. (run `mvp` to use MV weight.)
 #   mtf        multi tf/anchor — broadcast /fleet/calibrate; multiview_tf re-publishes /tf_static
@@ -57,6 +61,12 @@ _nsl_restart() {
         _nsl_ssh "$o" "sudo systemctl restart nsl-edge-agent@${u}.service nsl-train-listener@${u}.service \
             && echo restarted || echo RESTART-FAIL" | sed "s/^/  edge $o: /"
     done
+}
+
+# ── msb : multi service restart (no rebuild) — fast reload of calib/weights/code ──
+msb() {
+    echo "[msb] restarting all edge services (reload code/calib/weights, re-publish TF; no rebuild)…"
+    _nsl_restart
 }
 
 # ── mgp : mirror host code to edges (rsync, not git) ────────────────────────

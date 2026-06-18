@@ -153,7 +153,9 @@ def _calib_actions(context):
              '--slide-min-points', LaunchConfiguration('slide_min_points').perform(context),
              '--slide-min-range', LaunchConfiguration('slide_min_range').perform(context),
              '--slide-max-range', LaunchConfiguration('slide_max_range').perform(context),
-             '--slide-search-radius', LaunchConfiguration('slide_search_radius').perform(context)],
+             '--slide-search-radius', LaunchConfiguration('slide_search_radius').perform(context),
+             '--debug-roi', LaunchConfiguration('debug_roi').perform(context),
+             '--debug-roi-max-points', LaunchConfiguration('debug_roi_max_points').perform(context)],
         output='screen')]
 
 
@@ -276,6 +278,47 @@ def _camera_group(cam_id, color, show_rgb_image, cloud_topic_depth, cloud_filter
             History Policy: Keep Last
             Reliability Policy: Reliable
             Value: /cam_{cam_id}/camera/point_cloud_rgb
+          Use Fixed Frame: true
+          Value: true
+        - Class: rviz_default_plugins/MarkerArray
+          Enabled: true
+          Marker Topic:
+            Depth: 1
+            Durability Policy: Transient Local
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /cam_{cam_id}/multiview_debug/roi_markers
+          Name: ROI Markers
+          Namespaces:
+            {{}}
+          Value: true
+        - Alpha: 1
+          Autocompute Intensity Bounds: true
+          Autocompute Value Bounds:
+            Max Value: 1
+            Min Value: 0
+            Value: true
+          Axis: Z
+          Channel Name: rgb
+          Class: rviz_default_plugins/PointCloud2
+          Color: 255; 220; 0
+          Color Transformer: RGB8
+          Decay Time: 0
+          Enabled: true
+          Max Color: 255; 255; 255
+          Min Color: 0; 0; 0
+          Name: ROI Points
+          Position Transformer: XYZ
+          Size (Pixels): 5
+          Size (m): 0.009999999776482582
+          Style: Points
+          Topic:
+            Depth: 1
+            Durability Policy: Transient Local
+            Filter size: {cloud_filter_size}
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /cam_{cam_id}/multiview_debug/roi_points
           Use Fixed Frame: true
           Value: true
 {image_display.rstrip()}
@@ -559,7 +602,7 @@ def generate_launch_description():
                         'true just adds the viewer + [s]save [r]reset [q]quit; it still auto-saves after duration.'),
         DeclareLaunchArgument('depth_refine', default_value='true',
             description='Per-tag LiDAR-plane RANSAC depth refine (needs extrinsic.yml)'),
-        DeclareLaunchArgument('depth_band', default_value='0.50',
+        DeclareLaunchArgument('depth_band', default_value='0.05',
             description='± depth band (m) for the LiDAR RANSAC/refinement crop'),
         DeclareLaunchArgument('ransac_tol', default_value='0.08',
             description='RANSAC inlier tolerance (m) for the LiDAR marker-plane fit (capped at depth_band)'),
@@ -567,11 +610,11 @@ def generate_launch_description():
             description='Reject LiDAR depth refine unless this fraction of the selected crop agrees with one plane; 0 keeps only absolute support'),
         DeclareLaunchArgument('max_depth_delta', default_value='0.0',
             description='Reject LiDAR depth refine when the final range correction exceeds this many meters; 0 disables so large pulls are visible'),
-        DeclareLaunchArgument('slide_crop_x', default_value='0.50',
+        DeclareLaunchArgument('slide_crop_x', default_value='0.35',
             description='Sliding mode: marker-frame left/right crop half-width in meters'),
-        DeclareLaunchArgument('slide_crop_y', default_value='0.10',
+        DeclareLaunchArgument('slide_crop_y', default_value='0.35',
             description='Sliding mode: marker-frame up/down crop half-height in meters'),
-        DeclareLaunchArgument('slide_z_band', default_value='0.12',
+        DeclareLaunchArgument('slide_z_band', default_value='0.05',
             description='Sliding mode: count points this close to the marker plane in marker-frame z'),
         DeclareLaunchArgument('slide_stride', default_value='0.10',
             description='Sliding mode: camera-ray range stride in meters'),
@@ -583,6 +626,10 @@ def generate_launch_description():
             description='Sliding mode: optional maximum camera-ray range in meters; <=0 uses cloud max'),
         DeclareLaunchArgument('slide_search_radius', default_value='0.0',
             description='Sliding mode: only search this many meters around the monocular STag range; 0 searches all cloud ranges'),
+        DeclareLaunchArgument('debug_roi', default_value='false',
+            description='Publish RViz debug ROI boxes/points for each tag depth-refine result'),
+        DeclareLaunchArgument('debug_roi_max_points', default_value='3000',
+            description='Maximum selected LiDAR points to publish per tag ROI debug snapshot'),
 
         OpaqueFunction(function=_setup),
     ])
