@@ -136,7 +136,7 @@ Edge depth refine:
 | `--min-plane-inlier-ratio` | `0.0` | `0`이면 절대 inlier count만 확인 |
 | `--slide-crop-x` | `0.35` | marker-frame x 방향 ROI 반폭 |
 | `--slide-crop-y` | `0.35` | marker-frame y 방향 ROI 반폭 |
-| `--slide-z-band` | `0.05` | marker plane normal 방향 ROI 반두께 |
+| `--slide-z-band` | `0.03` | marker plane normal 방향 ROI 반두께 |
 | `--debug-roi` | `false` | tag별 sliding ROI 박스와 선택된 LiDAR 점을 RViz 토픽으로 발행 |
 | `--debug-roi-max-points` | `3000` | tag별 ROI debug point 최대 개수 |
 
@@ -151,6 +151,14 @@ edge 서비스에서 켤 때는 해당 edge의 `~/.ros/nsl_runtime.env`에
 `mvw`의 각 카메라 그룹에는 위 토픽 display가 기본으로 들어간다. 파란 박스는 RGB monocular pose,
 주황 박스는 sliding window가 고른 depth, 초록/빨강 박스는 RANSAC refine 결과다.
 노란 점들은 실제 선택된 3D ROI 안의 LiDAR 점이다. id0 link가 사람/바닥/배경을 잡으면 여기서 바로 보인다.
+
+Color point cloud 표시는 기본적으로 live 스트림이 아니라 `mtf` 스냅샷 방식이다.
+
+- `mvw`는 기본으로 `/cam_NN/multiview_debug/color_cloud_snapshot`을 본다.
+- 각 edge의 `cloud_snapshot_node.py`가 `/fleet/calibrate`를 받으면 최신 RGB point cloud 한 프레임만 발행한다.
+- RViz display는 `Decay Time: 30`으로 설정되어 있어 `mtf` 이후 30초가 지나거나 `mvw`를 다시 켜면 오래된
+  color cloud가 남지 않는다.
+- 계속 live color cloud를 보고 싶으면 `mvw cloud_display_mode:=live`로 실행한다.
 
 ---
 

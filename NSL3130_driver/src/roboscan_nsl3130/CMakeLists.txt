@@ -139,6 +139,7 @@ install(PROGRAMS
   scripts/multiview_solver_node.py
   scripts/multiview_put_server.py
   scripts/rgb_compressor_node.py
+  scripts/cloud_snapshot_node.py
   scripts/verify_intrinsic.py
   DESTINATION lib/${PROJECT_NAME}
 )

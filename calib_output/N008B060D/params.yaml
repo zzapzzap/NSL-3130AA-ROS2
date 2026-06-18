@@ -8,7 +8,7 @@ IntegrationTime3D: 350
 IntegrationTimeHdr1: 700
 IntegrationTimeHdr2: 80
 IntegrationTimeGray: 100
-MinAmplitude: 2
+MinAmplitude: 5
 Modulation: MOD_12Mhz
 Channel: 0
 MedianFilter: true

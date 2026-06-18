@@ -228,8 +228,17 @@ def _resolve_cameras(context, calib_dir):
     return []
 
 
-def _camera_group(cam_id, color, show_rgb_image, cloud_topic_depth, cloud_filter_size, cloud_point_size_pixels):
+def _camera_group(cam_id, color, show_rgb_image, cloud_topic_depth, cloud_filter_size,
+                  cloud_point_size_pixels, cloud_display_mode, cloud_snapshot_decay):
     """One RViz Group = colour PointCloud2 + uniquely-named RGB Image."""
+    if cloud_display_mode == 'live':
+        cloud_topic = f'/cam_{cam_id}/camera/point_cloud_rgb'
+        cloud_name = 'PointCloud'
+        cloud_decay = '0'
+    else:
+        cloud_topic = f'/cam_{cam_id}/multiview_debug/color_cloud_snapshot'
+        cloud_name = 'PointCloud Snapshot'
+        cloud_decay = cloud_snapshot_decay
     image_display = ''
     if show_rgb_image:
         image_display = f"""\
@@ -262,11 +271,11 @@ def _camera_group(cam_id, color, show_rgb_image, cloud_topic_depth, cloud_filter
           Class: rviz_default_plugins/PointCloud2
           Color: {color}
           Color Transformer: RGB8
-          Decay Time: 0
+          Decay Time: {cloud_decay}
           Enabled: true
           Max Color: 255; 255; 255
           Min Color: 0; 0; 0
-          Name: PointCloud
+          Name: {cloud_name}
           Position Transformer: XYZ
           Size (Pixels): {cloud_point_size_pixels}
           Size (m): 0.009999999776482582
@@ -277,7 +286,7 @@ def _camera_group(cam_id, color, show_rgb_image, cloud_topic_depth, cloud_filter
             Filter size: {cloud_filter_size}
             History Policy: Keep Last
             Reliability Policy: Reliable
-            Value: /cam_{cam_id}/camera/point_cloud_rgb
+            Value: {cloud_topic}
           Use Fixed Frame: true
           Value: true
         - Class: rviz_default_plugins/MarkerArray
@@ -349,6 +358,8 @@ def _build_rviz_config(
     cloud_filter_size,
     cloud_point_size_pixels,
     rviz_frame_rate,
+    cloud_display_mode,
+    cloud_snapshot_decay,
 ):
     """Render a complete rviz2 config for exactly `cam_ids` (already sorted)."""
     expanded = '\n'.join(f'        - /cam_{c}_PointCloud1' for c in cam_ids) or \
@@ -360,6 +371,8 @@ def _build_rviz_config(
         cloud_topic_depth,
         cloud_filter_size,
         cloud_point_size_pixels,
+        cloud_display_mode,
+        cloud_snapshot_decay,
     )
                      for i, c in enumerate(cam_ids))
     img_geometry = ('\n'.join(f'  cam_{c} RGB:\n    collapsed: false' for c in cam_ids)
@@ -480,6 +493,10 @@ def _viewer_actions(context):
         cloud_filter_size = max(1, int(LaunchConfiguration('cloud_filter_size').perform(context)))
         cloud_point_size_pixels = max(1, int(LaunchConfiguration('cloud_point_size_pixels').perform(context)))
         rviz_frame_rate = max(1, int(LaunchConfiguration('rviz_frame_rate').perform(context)))
+        cloud_display_mode = LaunchConfiguration('cloud_display_mode').perform(context).strip().lower()
+        if cloud_display_mode not in ('snapshot', 'live'):
+            cloud_display_mode = 'snapshot'
+        cloud_snapshot_decay = LaunchConfiguration('cloud_snapshot_decay').perform(context).strip()
         rviz_config = _write_tmp(
             _build_rviz_config(
                 cam_ids,
@@ -489,6 +506,8 @@ def _viewer_actions(context):
                 cloud_filter_size,
                 cloud_point_size_pixels,
                 rviz_frame_rate,
+                cloud_display_mode,
+                cloud_snapshot_decay,
             ))
 
     # Optional LOCAL scan: only to review this machine's saved calib_output when no
@@ -576,6 +595,10 @@ def generate_launch_description():
         DeclareLaunchArgument('cloud_point_size_pixels', default_value='3',
             description='RViz PointCloud2 point size in pixels (default 3 = easier to see; '
                         'lower to 1 for the lightest multi-camera view).'),
+        DeclareLaunchArgument('cloud_display_mode', default_value='snapshot',
+            description='snapshot = show one color cloud per mtf trigger; live = subscribe to camera/point_cloud_rgb continuously'),
+        DeclareLaunchArgument('cloud_snapshot_decay', default_value='30',
+            description='RViz decay time in seconds for snapshot color clouds'),
         DeclareLaunchArgument('rviz_frame_rate', default_value='15',
             description='RViz render frame rate cap. Lower values reduce GPU/CPU pressure.'),
         DeclareLaunchArgument('use_multiview_tf', default_value='false',
@@ -614,9 +637,9 @@ def generate_launch_description():
             description='Sliding mode: marker-frame left/right crop half-width in meters'),
         DeclareLaunchArgument('slide_crop_y', default_value='0.35',
             description='Sliding mode: marker-frame up/down crop half-height in meters'),
-        DeclareLaunchArgument('slide_z_band', default_value='0.05',
+        DeclareLaunchArgument('slide_z_band', default_value='0.03',
             description='Sliding mode: count points this close to the marker plane in marker-frame z'),
-        DeclareLaunchArgument('slide_stride', default_value='0.10',
+        DeclareLaunchArgument('slide_stride', default_value='0.05',
             description='Sliding mode: camera-ray range stride in meters'),
         DeclareLaunchArgument('slide_min_points', default_value='30',
             description='Sliding mode: minimum LiDAR points required for a valid marker crop'),
