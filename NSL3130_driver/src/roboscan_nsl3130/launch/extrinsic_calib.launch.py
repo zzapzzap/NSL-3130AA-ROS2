@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Extrinsic calibration launcher — wraps setup/extrinsic_calib.sh.
+Extrinsic calibration launcher — runs scripts/extrinsic_calibration_node.py.
 camera_id (USB serial) is auto-detected via detect_camera_id.py for the intrinsic.yml
 path / output. Subscribed topics are namespaced by this machine's IP last octet
 (cam_{octet}), matching camera.launch.py — so `namespace:=auto` agrees with the
@@ -66,11 +66,11 @@ def _launch_setup(context):
 
     pkg_share     = get_package_share_directory('roboscan_nsl3130')
     ws_root       = os.path.normpath(os.path.join(pkg_share, '..', '..', '..', '..'))
-    detect_script = os.path.join(ws_root, 'src', 'NSL-3130AA-ROS2',
-                                 'NSL3130_driver', 'src', 'roboscan_nsl3130',
-                                 'scripts', 'detect_camera_id.py')
-    sh_path       = os.path.join(ws_root, 'src', 'NSL-3130AA-ROS2',
-                                 'setup', 'extrinsic_calib.sh')
+    scripts_dir   = os.path.join(ws_root, 'src', 'NSL-3130AA-ROS2',
+                                 'NSL3130_driver', 'src', 'roboscan_nsl3130', 'scripts')
+    detect_script = os.path.join(scripts_dir, 'detect_camera_id.py')
+    node_script   = os.path.join(scripts_dir, 'extrinsic_calibration_node.py')
+    calib_dir     = os.path.join(ws_root, 'src', 'NSL-3130AA-ROS2', 'calib_output')
 
     if not camera_id:
         try:
@@ -80,17 +80,25 @@ def _launch_setup(context):
         except subprocess.CalledProcessError:
             print('[extrinsic_calib] WARNING: Camera not detected.'
                   ' Pass camera_id:=<serial> to override.'
-                  ' setup/extrinsic_calib.sh will fall back to intrinsic.yml.')
+                  ' The calibration node will fall back to intrinsic.yml if possible.')
 
     ns = _ns_prefix(context)
-    image_topic     = _topic(LaunchConfiguration('image_topic').perform(context),     ns, 'camera/rgb/image_raw')
-    lidar_topic     = _topic(LaunchConfiguration('lidar_topic').perform(context),     ns, 'camera/point_cloud')
-    amplitude_topic = _topic(LaunchConfiguration('amplitude_topic').perform(context), ns, 'camera/ampl')
-    print(f'[extrinsic_calib] image={image_topic} lidar={lidar_topic} amplitude={amplitude_topic}')
+    image_topic       = _topic(LaunchConfiguration('image_topic').perform(context),       ns, 'camera/rgb/image_raw')
+    camera_info_topic = _topic(LaunchConfiguration('camera_info_topic').perform(context), ns, 'camera/rgb/camera_info')
+    lidar_topic       = _topic(LaunchConfiguration('lidar_topic').perform(context),       ns, 'camera/point_cloud')
+    amplitude_topic   = _topic(LaunchConfiguration('amplitude_topic').perform(context),   ns, 'camera/ampl')
+    print(f'[extrinsic_calib] image={image_topic} camera_info={camera_info_topic} '
+          f'lidar={lidar_topic} amplitude={amplitude_topic}')
 
     return [ExecuteProcess(
-        cmd=['bash', sh_path, camera_id, image_topic, lidar_topic,
-             amplitude_topic, points_per_frame],
+        cmd=['python3', node_script,
+             '--camera-id', camera_id,
+             '--image-topic', image_topic,
+             '--camera-info-topic', camera_info_topic,
+             '--lidar-topic', lidar_topic,
+             '--amplitude-topic', amplitude_topic,
+             '--points-per-frame', points_per_frame,
+             '--output-dir', calib_dir],
         output='screen',
     )]
 
@@ -103,6 +111,8 @@ def generate_launch_description():
             description="Topic namespace: 'auto'=cam_{ip_octet} matching camera.launch.py (DEFAULT), ''=none (/camera/...), or explicit"),
         DeclareLaunchArgument('image_topic',  default_value='auto',
             description="'auto' → /<namespace>/camera/rgb/image_raw; or explicit topic"),
+        DeclareLaunchArgument('camera_info_topic',  default_value='auto',
+            description="'auto' → /<namespace>/camera/rgb/camera_info; or explicit topic"),
         DeclareLaunchArgument('lidar_topic',  default_value='auto',
             description="'auto' → /<namespace>/camera/point_cloud; or explicit topic"),
         DeclareLaunchArgument('amplitude_topic', default_value='auto',

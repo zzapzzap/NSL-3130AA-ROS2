@@ -59,11 +59,45 @@ def se3_identity():
     return np.eye(3), np.zeros(3)
 
 
+UP = np.array([0.0, 0.0, 1.0])
+
+
+def _unit(v, fallback=None):
+    v = np.asarray(v, dtype=np.float64).reshape(3)
+    n = float(np.linalg.norm(v))
+    if n > 1e-12:
+        return v / n
+    return np.asarray(fallback if fallback is not None else UP, dtype=np.float64).reshape(3)
+
+
+def _rot_between(a, b):
+    """Smallest rotation matrix that maps unit vector a onto unit vector b."""
+    a = _unit(a)
+    b = _unit(b)
+    v = np.cross(a, b)
+    c = float(np.clip(a @ b, -1.0, 1.0))
+    s = float(np.linalg.norm(v))
+    if s < 1e-12:
+        if c > 0.0:
+            return np.eye(3)
+        axis = np.cross(a, np.array([1.0, 0.0, 0.0]))
+        if np.linalg.norm(axis) < 1e-6:
+            axis = np.cross(a, np.array([0.0, 1.0, 0.0]))
+        return Rot.from_rotvec(np.pi * _unit(axis)).as_matrix()
+    return Rot.from_rotvec(_unit(v) * np.arctan2(s, c)).as_matrix()
+
+
+def _angle_deg_between(a, b):
+    a = _unit(a)
+    b = _unit(b)
+    return float(np.degrees(np.arccos(np.clip(float(a @ b), -1.0, 1.0))))
+
+
 def _snap_up(R):
     """Force a tag's normal (R[:,2]) to world +Z (tags lie flat), keeping the in-plane heading."""
     x = R[:, 0].copy(); x[2] = 0.0
     x = x / np.linalg.norm(x) if np.linalg.norm(x) > 1e-6 else np.array([1.0, 0.0, 0.0])
-    z = np.array([0.0, 0.0, 1.0]); y = np.cross(z, x)
+    z = UP.copy(); y = np.cross(z, x)
     return np.column_stack([x, y, z])
 
 
@@ -149,13 +183,16 @@ class BundleSolver:
     """Deterministic chain solver over camera + tag SE3 poses."""
 
     def __init__(self, ref_id=0, w_up=2.0, depth_vote_range=0.6,
-                 depth_vote_step=0.01, depth_vote_perp=0.25, depth_vote_half=0.05):
+                 depth_vote_step=0.01, depth_vote_perp=0.25, depth_vote_half=0.05,
+                 fit_z_up=True, max_z_up_correction=35.0):
         self.ref_id = int(ref_id)
         self.w_up = float(w_up)
         self.depth_vote_range = float(depth_vote_range)
         self.depth_vote_step = float(depth_vote_step)
         self.depth_vote_perp = float(depth_vote_perp)
         self.depth_vote_half = float(depth_vote_half)
+        self.fit_z_up = bool(fit_z_up)
+        self.max_z_up_correction = float(max_z_up_correction)
 
     def _priority(self, tid):
         """Tag priority for anchor + link order: id 0 first, then ascending id."""
@@ -220,12 +257,37 @@ class BundleSolver:
                       - np.median([np.asarray(c, float) @ d for c in tag_ts_cam]))
         return s, best[0]
 
+    def _fit_camera_z_up(self, R_w_cam, chosen):
+        """Roll/pitch fit after translation is fixed.
+
+        Main/link marker depth chooses the epipolar translation first. Then this
+        finds the smallest camera-rotation correction that makes the average
+        observed marker normal face world +Z. Yaw is preserved as much as possible.
+        """
+        if self.w_up <= 0.0 or not self.fit_z_up or not chosen:
+            return R_w_cam, 0.0, 0.0, False
+        normals = []
+        for R_c_tag, _t in chosen.values():
+            n = _unit(R_w_cam @ np.asarray(R_c_tag, dtype=np.float64).reshape(3, 3)[:, 2])
+            if n[2] < 0.0:
+                n = -n
+            normals.append(n)
+        if not normals:
+            return R_w_cam, 0.0, 0.0, False
+        n_avg = _unit(np.mean(np.asarray(normals), axis=0))
+        max_before = max(_angle_deg_between(n, UP) for n in normals)
+        corr = _rot_between(n_avg, UP)
+        corr_deg = float(np.degrees(np.linalg.norm(Rot.from_matrix(corr).as_rotvec())))
+        if corr_deg > self.max_z_up_correction:
+            return R_w_cam, corr_deg, max_before, True
+        return corr @ R_w_cam, corr_deg, max_before, False
+
     def _greedy_chain(self, observations, anchor, clouds=None):
         """Priority greedy chain (NO global BA). anchor tag = origin. Process cameras by tag count
         (most first); place each via its lowest-id ALREADY-PLACED (linking) tag by composing the
-        per-tag corner poses, after a RIGID cloud depth-vote that slides the camera's whole tag
-        cluster along the linking bearing to where its point cloud sits. Add the camera's new tags
-        (snapped horizontal). String-of-sausages TF tree. Returns (cam_pose, tag_pose, info)."""
+        per-tag corner poses. The linking tag's epipolar line fixes translation first via the
+        edge sliding-window depth; then camera rotation is minimally fit so the observed tag
+        normals face world +Z. Add new tags snapped horizontal. Returns (cam_pose, tag_pose, info)."""
         clouds = clouds or {}
         tagset = [set(ob['tags']) for ob in observations]
         tp = {anchor: se3_identity()}
@@ -293,8 +355,16 @@ class BundleSolver:
                 depth_source = 'link_lidar'
             ts = {tid: t + s * d_link for tid, t in base_ts.items()}
 
-            # 4) place the camera via the (depth-refined) link, then add its not-yet-placed tags
-            cam = se3_compose(tp[link], se3_inv((chosen[link][0], ts[link])))
+            # 4) Place the camera via the depth-refined link translation, then fit roll/pitch
+            #    so all visible marker normals face +Z. Recompute camera translation after the
+            #    rotation fit so the link marker position stays exactly fixed.
+            cam_raw = se3_compose(tp[link], se3_inv((chosen[link][0], ts[link])))
+            R_cam, normal_fit_deg, normal_max_deg, normal_fit_skipped = self._fit_camera_z_up(
+                cam_raw[0], chosen)
+            if normal_fit_skipped:
+                cam = cam_raw
+            else:
+                cam = (R_cam, tp[link][1] - R_cam @ ts[link])
             cp[ci] = cam
             for tid in ob['tags']:
                 if tid in tp:
@@ -304,6 +374,7 @@ class BundleSolver:
                     Rw = _snap_up(Rw)
                 tp[tid] = (Rw, tw)
             info[ob['camera_id']] = {
+                'namespace': ob.get('namespace', ''),
                 'link': link,
                 'shared': shared,
                 'added': sorted(t for t in ob['tags'] if t not in shared),
@@ -313,6 +384,9 @@ class BundleSolver:
                 'link_rgb_m': round(link_rgb_m, 3),
                 'link_lidar_m': None if link_lidar_m is None else round(float(link_lidar_m), 3),
                 'cloud_inliers': int(ninl),
+                'normal_fit_deg': round(float(normal_fit_deg), 3),
+                'normal_max_before_deg': round(float(normal_max_deg), 3),
+                'normal_fit_skipped': bool(normal_fit_skipped),
             }
         return cp, tp, info, sorted(set(range(len(observations))) - remaining), set(tp)
 
@@ -414,7 +488,12 @@ def run_node(args):
                 depth_vote_step=args.depth_vote_step,
                 depth_vote_perp=args.depth_vote_perp,
                 depth_vote_half=args.depth_vote_half,
+                fit_z_up=args.fit_z_up,
+                max_z_up_correction=args.max_z_up_correction,
             )
+            self.roi_flush_pub = None
+            if args.roi_debug_flush_topic:
+                self.roi_flush_pub = self.create_publisher(Empty, args.roi_debug_flush_topic, 10)
             self.create_timer(1.0, self._discover)
             if args.trigger_topic:
                 self.create_subscription(Empty, args.trigger_topic, self._on_trigger, 10)
@@ -477,13 +556,17 @@ def run_node(args):
                 cams = sorted(set(res['bridges'][tid]))
                 star = ' ★anchor' if tid == res['anchor'] else (' (bridge)' if len(cams) >= 2 else '')
                 self.get_logger().info(f'    id{tid}: {", ".join(cams)}{star}')
-            for cam_id, inf in res.get('chain', {}).items():
+            for step, (cam_id, inf) in enumerate(res.get('chain', {}).items(), start=1):
                 lidar = 'none' if inf["link_lidar_m"] is None else f'{inf["link_lidar_m"]:.3f}'
+                src = inf.get('namespace') or cam_id
                 self.get_logger().info(
-                    f'    chain {cam_id}: link=id{inf["link"]} shared={inf["shared"]} '
+                    f'    chain#{step} src={src} serial={cam_id}: '
+                    f'link=id{inf["link"]} shared={inf["shared"]} '
                     f'added={inf["added"]} depth={inf["depth_source"]} '
                     f'link_range={inf["link_rgb_m"]:.3f}->{lidar}m '
                     f'shift={inf["depth_shift_m"]:+.3f}m inliers={inf["cloud_inliers"]} '
+                    f'normal_fit={inf["normal_fit_deg"]:.3f}deg'
+                    f'{"/SKIP" if inf["normal_fit_skipped"] else ""} '
                     f'flips={inf["flips"]}')
             if res['isolated_cams']:
                 self.get_logger().warn(
@@ -512,6 +595,21 @@ def run_node(args):
                 self.get_logger().info(
                     f'[mv_solver] wrote {len(res["free_cams"])} multiview.yml under {args.out_dir} '
                     f'(dry-run; re-run with --writeback to push to the edges).')
+            self._flush_roi_debug()
+
+        def _flush_roi_debug(self):
+            if self.roi_flush_pub is None:
+                return
+            delay = max(0.0, float(args.roi_debug_flush_delay))
+            if delay > 0.0:
+                time.sleep(delay)
+            count = max(1, int(args.roi_debug_flush_count))
+            for _ in range(count):
+                self.roi_flush_pub.publish(Empty())
+                time.sleep(0.05)
+            self.get_logger().info(
+                f'[mv_solver] ROI debug flush → {args.roi_debug_flush_topic} '
+                f'({count} pulse{"s" if count != 1 else ""})')
 
         def _push(self, ns, yml_path):
             """Chunked + sha256 push of one solved multiview.yml to /<ns>/multiview/put (WRITEBACK).
@@ -700,6 +798,29 @@ def _selftest():
     print('[selftest E/parse-depth] ' + ('PASS' if okE else 'FAIL'))
     ok = ok and okE
 
+    # (F) z-up fit keeps the link translation fixed while reducing marker-normal tilt.
+    R_link = Rot.from_euler('x', np.radians(6.0)).as_matrix()
+    R_other = Rot.from_euler('y', np.radians(-8.0)).as_matrix()
+    obs = [{
+        'camera_id': 'CAMZ', 'namespace': 'cam_z', 'tags': {
+            0: {'R': R_link, 't': np.array([0.0, 0.0, 1.0]), 't_mono': np.array([0.0, 0.0, 1.0]),
+                'size': sizes[0], 'rmse_px': 0.5, 'views': 10, 'range_lidar': 1.0, 'range_conf': 1.0},
+            1: {'R': R_other, 't': np.array([0.35, 0.0, 1.0]), 't_mono': np.array([0.35, 0.0, 1.0]),
+                'size': sizes[1], 'rmse_px': 0.5, 'views': 10, 'range_lidar': None, 'range_conf': 1.0},
+        }
+    }]
+    rF = BundleSolver(w_up=2.0).solve(obs, anchor_id=0)
+    link_pos = rF['cam_pose'][0][0] @ obs[0]['tags'][0]['t_mono'] + rF['cam_pose'][0][1]
+    tag1_z = rF['tag_pose'][1][0][:, 2]
+    fit_deg = rF['chain']['CAMZ']['normal_fit_deg']
+    okF = (rF['ok']
+           and np.linalg.norm(link_pos) < 1e-9
+           and _angle_deg_between(tag1_z, UP) < 1e-9
+           and fit_deg > 0.01)
+    print(f'[selftest F/z-up-fit] normal_fit={fit_deg:.3f}deg '
+          f'link={link_pos.round(6).tolist()}  ' + ('PASS' if okF else 'FAIL'))
+    ok = ok and okF
+
     print('[selftest] ALL PASS' if ok else '[selftest] FAILED')
     return 0 if ok else 1
 
@@ -731,6 +852,11 @@ def main():
                     help='Seconds to wait for each edge /cam_NN/multiview/put service.')
     ap.add_argument('--w-up', type=float, default=2.0,
                     help='If >0, use horizontal-tag up-normal scoring to choose deterministic IPPE flips.')
+    ap.add_argument('--fit-z-up', action=argparse.BooleanOptionalAction, default=True,
+                    help='After link epipolar depth fixes translation, minimally rotate each camera so '
+                         'visible marker normals face world +Z. Default true.')
+    ap.add_argument('--max-z-up-correction', type=float, default=35.0,
+                    help='Skip z-up camera rotation fitting if the required correction exceeds this many degrees.')
     ap.add_argument('--depth-vote-range', type=float, default=0.60,
                     help='Host cloud-vote search half-range (m) along the linking tag ray.')
     ap.add_argument('--depth-vote-step', type=float, default=0.01,
@@ -739,6 +865,13 @@ def main():
                     help='Host cloud-vote perpendicular half-width (m), 0.25 = 50 cm box.')
     ap.add_argument('--depth-vote-half', type=float, default=0.05,
                     help='Host cloud-vote depth half-thickness (m), 0.05 = 10 cm box.')
+    ap.add_argument('--roi-debug-flush-topic', default='/fleet/roi_debug_flush',
+                    help='Publish std_msgs/Empty here after solving/writeback so edge ROI snapshots are '
+                         'shown only after matching is complete. Empty disables.')
+    ap.add_argument('--roi-debug-flush-delay', type=float, default=1.0,
+                    help='Seconds to wait after solver output/writeback before flushing ROI debug markers.')
+    ap.add_argument('--roi-debug-flush-count', type=int, default=3,
+                    help='Number of ROI debug flush pulses to publish.')
     # Compatibility no-ops: accepted so old aliases / solver_args do not fail, but the
     # deterministic chain path no longer runs BA, triangulation, or LiDAR-prior gating.
     ap.add_argument('--w-rot', type=float, default=2.0, help='compatibility no-op')

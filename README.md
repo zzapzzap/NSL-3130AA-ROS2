@@ -36,7 +36,7 @@ ros2 launch roboscan_nsl3130 multiview.launch.py
 | 카메라 실행 | `ros2 launch roboscan_nsl3130 camera.launch.py` | 카메라별 params, 토픽 접두어, TF, RViz/rqt가 자동 적용됩니다 |
 | Edge headless 실행 | `ros2 launch roboscan_nsl3130 camera.launch.py use_rviz:=false use_rqt:=false` | Edge는 퍼블리시만 하고, 화면 표시는 Host에서 처리됩니다 |
 | Host multiview | `ros2 launch roboscan_nsl3130 multiview.launch.py` | 모든 Edge의 `/cam_N` 포인트클라우드가 `stag_marker` 기준으로 표시됩니다 |
-| Host 자동화 (여러 Edge 일괄) | `mgp` · `mcb` · `mtr` (호스트 alias) | 코드 미러 / 빌드+서비스 재시작 / 멀티 학습 — 자세히는 [6-7](#6-7-호스트-자동화-명령-fleet_toolssh) |
+| Host 자동화 (여러 Edge 일괄) | `mgp` · `mcb` · `mtf` · `mtr` · `mvw` · `mvp` | 코드 미러 / 빌드+서비스 재시작 / 멀티뷰 정합 / 학습 / 뷰어 — 자세히는 [6-7](#6-7-호스트-자동화-명령-fleet_toolssh) |
 | 멀티뷰 전역 정합 | `mvw` 띄우고 `mtf` 한 번 | 떠 있는 모든 Edge를 `stag_marker` 하나로 번들 정합(멀티태그) — 원리는 [docs/multiview_tf_solver.md](docs/multiview_tf_solver.md) |
 
 ### Host/Edge 규칙
@@ -103,6 +103,34 @@ git clone --recurse-submodules https://github.com/zzapzzap/NSL-3130AA-ROS2.git
 | `setup/install_libusb_linux.sh` | libusb/udev 설치 |
 | `setup/setup_fleet_edge.bash` | Edge/Host 통신 설정 + 카메라 IP 자동 세팅 |
 | `setup/setup_dds_interface.bash` | ROS 2 통신이 `192.168.0.x` 내부망만 쓰게 제한 |
+
+새 컴퓨터에 한 번에 올릴 때는 아래 순서가 가장 덜 헷갈립니다.
+
+```bash
+# Host에서 fleet 자동화(mgp/mcb/msb/mtf)를 쓸 경우 먼저 준비
+# 개인정보 파일이므로 repo에 넣지 말고 USB 등으로 Host 홈에만 배치하세요.
+install -m 600 /path/to/.edges.conf ~/.edges.conf
+
+# NSL-3130AA-ROS2
+sudo bash ~/colcon_ws/src/NSL-3130AA-ROS2/setup/install_libusb_linux.sh
+bash ~/colcon_ws/src/NSL-3130AA-ROS2/setup/setup_fleet_edge.bash
+
+# ros_humanpose
+cd ~/colcon_ws/src/ros_humanpose
+./setup/install_dependency.sh
+./setup/download_dataset.sh
+./setup/download_weights.sh
+
+# 최종 빌드
+cd ~/colcon_ws
+colcon build --symlink-install
+source install/setup.bash
+```
+
+`~/.edges.conf`의 `pw` 항목을 쓰는 경우 `sshpass`는 **Host에서** 필요합니다. Host로 인식된 머신에서
+`setup_fleet_edge.bash`를 실행하면 `~/.edges.conf`가 있을 때 `sshpass`를 자동 설치합니다.
+Host/Edge 서비스까지 한 번에 설치하려면 `NSL-3130AA-ROS2`와 `ros_humanpose` 두 repo가 모두
+`~/colcon_ws/src/` 아래에 있는 상태에서 셋업을 진행하세요.
 
 ### 1-1. USB 드라이버 & udev 규칙
 
@@ -470,9 +498,21 @@ ros2 launch roboscan_nsl3130 multiview.launch.py calibration:=True is_host:=true
 - **`duration:=N`** 으로 두면 개수 대신 N초 시간 기반 수집으로 바뀝니다.
 - **정확도 팁**: 마커를 **1~1.5 m** 로 가까이 두고(멀수록 자세 오차가 커집니다), `marker_size` 는 실측값으로 넣으세요.
 
-**Multiview 검출 예시**
+**Multiview 검출/전역 정합 결과 확인**
 
-<img width="760" alt="multiview_calib" src="NSL3130_driver/asset/multiview_calib.png" />
+Host에서 viewer를 띄운 뒤 `mtf`만 실행하면, 각 Edge가 캘리브레이션을 수행하고 Host solver가 결과를
+writeback합니다. RViz에서는 `stag_marker` 기준 point cloud와 solve 이후 ROI debug가 함께 갱신됩니다.
+
+```bash
+# Host terminal 1: multiview RViz + bundle solver
+mvw
+
+# Host terminal 2: fleet calibration trigger
+mtf
+```
+
+<img width="760" alt="multiview calibration single camera" src="NSL3130_driver/asset/multiview_calibration-single.png" />
+<img width="760" alt="multiview calibration multi camera" src="NSL3130_driver/asset/multiview-calibration-multi.png" />
 
 **변환 방향**: 저장되는 `R, t` 는 **마커 → RGB 카메라** 자세입니다 → `x_cam = R · x_marker + t`. (카메라의 마커 기준 위치는 그 역, `Rᵀ, −Rᵀ·t`.)
 
@@ -648,6 +688,29 @@ ros2 run tf2_tools view_frames                              # frames.pdf 로 전
 Host에서 여러 Edge를 한 번에 다루는 alias 모음입니다. `setup_fleet_edge.bash`(Host)가 `~/.bashrc`에
 `fleet_tools.sh` 를 자동 source하므로, 새 터미널을 열거나 `source ~/.bashrc` 후 바로 씁니다. 대상은
 `192.168.0.51-60` 중 **지금 켜져 있는 Edge**(Host는 자기 옥텟 자동 제외). `NSL_EDGES="51 52"` 로 한정 가능.
+Edge 계정이 `sb`/`kitech`처럼 섞여 있거나 password fallback을 쓰려면 `~/.edges.conf`에 Edge별 계정과 workspace를 적어두세요.
+`fleet_tools.sh`는 이 파일이 있으면 그 목록만 대상으로 삼고, 없으면 기존처럼 `192.168.0.51-60`을 ping scan합니다.
+`pw`는 `sshpass`가 설치된 경우 SSH login과 sudo fallback에 쓰입니다. `sudo_pw`가 따로 있으면 `pw` 대신 사용할 수 있습니다.
+
+```text
+Edge 192.168.0.51
+  id AA
+  pw AA
+  workspace ~/colcon_ws
+
+Edge 192.168.0.52
+  id BB
+  pw BB
+  workspace ~/colcon_ws
+
+Edge 192.168.0.53
+  id CC
+  pw CC
+  workspace ~/colcon_ws
+```
+
+모든 Edge가 같은 계정일 때만 `NSL_FLEET_USER=sb`처럼 강제하세요. 이 값이 설정되어 있으면 Edge별 `id`보다 우선합니다.
+`~/.edges.conf`는 개인정보 파일이므로 git에 넣지 말고 Host 홈에만 `chmod 600 ~/.edges.conf`로 보관하세요.
 
 | 명령 | 하는 일 |
 |---|---|

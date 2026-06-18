@@ -98,15 +98,18 @@ WRITEBACK
 |---|---|
 | `deterministic-chain anchor=id...` | `stag_marker` 원점으로 사용한 태그 |
 | `id...: cam..., cam... (bridge)` | 어떤 태그 id가 어떤 카메라들을 연결하는지 |
-| `chain CAM...: link=id...` | 이 카메라를 기존 트리에 붙인 태그 |
+| `chain#N src=cam_... serial=... link=id...` | greedy 순서, ROS namespace, 장비 serial, 이 카메라를 기존 트리에 붙인 태그 |
 | `shared=[...]` | 이 카메라가 본 태그 중 이미 배치되어 있던 태그 |
 | `added=[...]` | 이 카메라가 새로 트리에 추가한 태그 |
 | `depth=link_lidar shift=+...m` | 연결 태그의 edge LiDAR range로 적용한 강체 depth shift |
+| `normal_fit=...deg` | link/main marker translation을 고정한 뒤, 보이는 태그 normal이 +Z를 보도록 적용한 최소 회전 보정 |
 | `flips=[...]` | up-normal scoring으로 선택된 IPPE alternate |
 | `ISOLATED cameras` | anchor까지 shared-tag 경로가 없어 붙지 못한 카메라 |
 
-53번 카메라를 볼 때는 먼저 `chain CAM53` 줄을 보면 된다. 여기서 link id, shift, isolated 여부,
-예상과 다른 태그로 연결됐는지를 확인한다.
+53번 카메라를 볼 때는 먼저 `src=cam_53`인 `chain#N` 줄을 보면 된다. 여기서 link id,
+shift, isolated 여부, 예상과 다른 태그로 연결됐는지를 확인한다. `shared=[0,1]`이어도
+link는 그중 우선순위가 가장 높은 이미 배치된 태그 하나다. 따라서 id0이 같이 보이면 보통
+`link=id0`이고, id1은 id0이 공유되지 않거나 아직 배치되지 않았을 때만 link가 된다.
 
 ---
 
@@ -118,10 +121,13 @@ Host solver 인자:
 |---|---:|---|
 | `--ref-id` | `0` | 선호 anchor id |
 | `--w-up` | `2.0` | 수평 태그 normal scoring으로 IPPE flip을 결정론적으로 고른다. 태그가 수평이 아니면 `0` |
+| `--fit-z-up` | `true` | link/main marker epipolar depth로 translation을 먼저 고정한 뒤, tag normal 평균이 +Z를 보도록 camera rotation을 최소 보정 |
+| `--max-z-up-correction` | `35.0` | z-up 보정이 이 각도를 넘으면 이상치로 보고 보정을 건너뜀 |
 | `--depth-vote-range` | `0.60` | host cloud vote를 쓸 때 탐색할 연결 ray 반경 |
 | `--depth-vote-step` | `0.01` | host cloud vote scan 간격 |
 | `--depth-vote-perp` | `0.25` | 수직 방향 반폭. `0.25`면 50 cm box |
 | `--depth-vote-half` | `0.05` | ray 방향 반두께. `0.05`면 10 cm box |
+| `--roi-debug-flush-topic` | `/fleet/roi_debug_flush` | solve/writeback 이후 edge ROI snapshot을 발행하라고 알리는 토픽 |
 
 예전 BA 튜닝 인자였던 `--w-lidar`, `--lidar-gate`, `--w-depth`,
 `--rot-angle-pow`, `--triangulate`는 기존 alias가 깨지지 않도록 받기만 하는 호환용 no-op이다.
@@ -136,11 +142,15 @@ Edge depth refine:
 | `--min-plane-inlier-ratio` | `0.0` | `0`이면 절대 inlier count만 확인 |
 | `--slide-crop-x` | `0.35` | marker-frame x 방향 ROI 반폭 |
 | `--slide-crop-y` | `0.35` | marker-frame y 방향 ROI 반폭 |
-| `--slide-z-band` | `0.03` | marker plane normal 방향 ROI 반두께 |
+| `--slide-z-band` | `0.05` | marker plane normal 방향 ROI 반두께 |
 | `--debug-roi` | `false` | tag별 sliding ROI 박스와 선택된 LiDAR 점을 RViz 토픽으로 발행 |
 | `--debug-roi-max-points` | `3000` | tag별 ROI debug point 최대 개수 |
 
-ROI 디버그를 켜면 edge calibration listener가 저장 시점의 snapshot을 latched topic으로 남긴다.
+ROI 디버그를 켜면 edge calibration listener가 저장 시점의 snapshot을 들고 있다가,
+fleet/`mtf` 흐름에서는 host solver가 matching/writeback을 끝낸 뒤 `/fleet/roi_debug_flush`를
+받으면 RViz topic으로 뱉는다. 즉, RViz에 보이는 ROI point는 solver가 적용한 TF 이후에
+다시 발행된 해당 카메라 calibration 결과의 선택 LiDAR 점이다. 직접 calibration 실행
+(`wait_trigger=false`)에서는 기존처럼 즉시 발행한다.
 
 - `/cam_NN/multiview_debug/roi_markers`
 - `/cam_NN/multiview_debug/roi_points`
@@ -150,12 +160,12 @@ edge 서비스에서 켤 때는 해당 edge의 `~/.ros/nsl_runtime.env`에
 
 `mvw`의 각 카메라 그룹에는 ROI point display만 기본으로 들어간다. marker topic은 남겨두되
 RViz 기본 display에서는 빼서, 실제 선택된 3D ROI 안의 LiDAR 점만 바로 확인한다.
-id0 link가 사람/바닥/배경을 잡으면 노란 ROI 점에서 바로 보인다.
+id0 link가 사람/바닥/배경을 잡으면 해당 카메라 색의 ROI 점에서 바로 보인다.
 
 Color point cloud와 ROI debug의 수명은 다르게 둔다.
 
 - `/cam_NN/camera/point_cloud_rgb`는 `mvw`에서 계속 live로 표시한다.
-- ROI debug marker/point는 `mtf` 또는 `/fleet/calibrate` 때 저장된 한 번의 calib snapshot만 보여준다.
+- ROI debug marker/point는 `mtf` 또는 `/fleet/calibrate` 뒤 solver matching/writeback이 끝난 한 번의 calib snapshot만 보여준다.
 - ROI debug publisher는 volatile QoS라서 `mvw`를 다시 켜면 오래된 ROI가 다시 뜨지 않는다.
 - RViz의 ROI point cloud는 `Decay Time: 30`으로 30초 뒤 사라진다.
 - `/pose_training/bounds`는 human pose 학습 범위다. `ros_humanpose`의 `synthetic_radius_m` 기본값은

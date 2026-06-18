@@ -290,6 +290,8 @@ class MultiviewCalibNode(Node):
         self.roi_marker_topic = ''
         self.roi_points_topic = ''
         self._roi_debug = {}
+        self._last_roi_rid = None
+        self._last_roi_results = None
         if args.debug_roi:
             base = f'/{self.ns}/multiview_debug' if self.ns else '/multiview_debug'
             self.roi_marker_topic = f'{base}/roi_markers'
@@ -298,6 +300,8 @@ class MultiviewCalibNode(Node):
                                                          _reliable_volatile_qos(1))
             self.roi_points_pub = self.create_publisher(PointCloud2, self.roi_points_topic,
                                                         _reliable_volatile_qos(1))
+            if args.roi_debug_flush_topic:
+                self.create_subscription(Empty, args.roi_debug_flush_topic, self._on_roi_debug_flush, 10)
 
         self.sub = self.create_subscription(Image, args.image_topic, self._cb, 1)
         if args.wait_trigger:
@@ -398,6 +402,14 @@ class MultiviewCalibNode(Node):
         self._collect_start = None
         self.saved = False
         self.armed = not idle
+
+    def _on_roi_debug_flush(self, _msg: Empty):
+        if self.roi_marker_pub is None:
+            return
+        if self._last_roi_rid is None or self._last_roi_results is None or not self._roi_debug:
+            self.get_logger().warn('[roi-debug] flush requested but no calibration ROI snapshot is ready.')
+            return
+        self._publish_roi_debug(self._last_roi_rid, self._last_roi_results)
 
     def _cb(self, msg: Image):
         if self.saved or not self.armed:
@@ -983,7 +995,14 @@ class MultiviewCalibNode(Node):
                 f'reproj {results[mid]["rmse"]:.2f}px  {depth_msg}')
 
         self._save(rid, results)
-        self._publish_roi_debug(rid, results)
+        self._last_roi_rid = rid
+        self._last_roi_results = results
+        if self.roi_marker_pub is not None and not (self.a.wait_trigger and self.a.debug_roi_after_solve):
+            self._publish_roi_debug(rid, results)
+        elif self.roi_marker_pub is not None:
+            self.get_logger().info(
+                f'[roi-debug] snapshot ready for {self.ns or self.serial}; '
+                f'waiting for {self.a.roi_debug_flush_topic} after host matching/writeback.')
         self.saved = True
         if self.obs_pub is not None:
             self._publish_observations(rid, results)
@@ -1203,12 +1222,19 @@ def main():
                     help='Maximum selected LiDAR points to publish per tag ROI debug snapshot.')
     ap.add_argument('--debug-roi-lifetime', type=float, default=30.0,
                     help='Seconds before ROI debug markers expire in RViz. Point decay is set in mvw.')
+    ap.add_argument('--debug-roi-after-solve', default='true',
+                    help='Fleet wait-trigger mode: hold ROI debug until the host solver publishes '
+                         '--roi-debug-flush-topic after matching/writeback. Direct calibration still '
+                         'publishes immediately. Default true.')
+    ap.add_argument('--roi-debug-flush-topic', default='/fleet/roi_debug_flush',
+                    help='std_msgs/Empty topic that releases the latest ROI debug snapshot.')
     args, ros_args = ap.parse_known_args()
     args.display = str(args.display).strip().lower() in ('true', '1', 'yes')
     args.depth_refine = str(args.depth_refine).strip().lower() in ('true', '1', 'yes')
     args.wait_trigger = str(args.wait_trigger).strip().lower() in ('true', '1', 'yes')
     args.publish_observations = str(args.publish_observations).strip().lower() in ('true', '1', 'yes')
     args.debug_roi = str(args.debug_roi).strip().lower() in ('true', '1', 'yes')
+    args.debug_roi_after_solve = str(args.debug_roi_after_solve).strip().lower() in ('true', '1', 'yes')
 
     rclpy.init(args=ros_args or None)
     try:

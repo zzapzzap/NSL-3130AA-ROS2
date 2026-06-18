@@ -94,6 +94,19 @@ ensure_fleet_tools_source() {
     printf '[fleet] host aliases enabled in ~/.bashrc (fleet_tools.sh: mgp mcb mtr mtf mvw mvp)\n'
 }
 
+ensure_host_password_tools() {
+    # Host-only fleet automation may use ~/.edges.conf with per-edge `pw` entries.
+    # sshpass is needed only on the machine initiating mgp/mcb/msb/mtf.
+    [[ -f "${HOME}/.edges.conf" ]] || return 0
+    if command -v sshpass >/dev/null 2>&1; then
+        printf '[fleet] sshpass OK for ~/.edges.conf password fallback.\n'
+        return 0
+    fi
+    printf '[fleet] Installing sshpass for ~/.edges.conf password fallback ...\n'
+    sudo apt-get update
+    sudo apt-get install -y sshpass
+}
+
 write_runtime_env() {
     local role="$1"
     local octet="${2:-}"
@@ -154,6 +167,7 @@ enable_host_service() {
     _install_unit "${rh_setup}/nsl-weight-server@.service" \
         "nsl-weight-server@.service" "nsl-weight-server@${user_name}.service"
     printf '[fleet] start now: sudo systemctl start nsl-weight-server@%s\n' "$user_name"
+    ensure_host_password_tools
     ensure_fleet_tools_source      # host fleet-control aliases (mgp/mcb/mtr/mtf/mvw/mvp)
 }
 

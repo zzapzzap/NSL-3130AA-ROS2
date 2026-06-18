@@ -290,13 +290,13 @@ def _camera_group(cam_id, color, show_rgb_image, cloud_topic_depth, cloud_filter
           Axis: Z
           Channel Name: rgb
           Class: rviz_default_plugins/PointCloud2
-          Color: 255; 220; 0
-          Color Transformer: RGB8
+          Color: {color}
+          Color Transformer: FlatColor
           Decay Time: {roi_debug_decay}
           Enabled: true
           Max Color: 255; 255; 255
           Min Color: 0; 0; 0
-          Name: ROI Points
+          Name: ROI Points cam_{cam_id}
           Position Transformer: XYZ
           Size (Pixels): 5
           Size (m): 0.009999999776482582

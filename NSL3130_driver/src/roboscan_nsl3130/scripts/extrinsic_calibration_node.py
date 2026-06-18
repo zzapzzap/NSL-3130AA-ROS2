@@ -1071,11 +1071,11 @@ def main():
             detected_id = candidates[0].parent.name
             print(f'        Found: {candidates[0]}')
             print(f'        Re-run with the correct camera_id:')
-            print(f'          ./setup/extrinsic_calib.sh {detected_id}')
+            print(f'          ros2 launch roboscan_nsl3130 extrinsic_calib.launch.py camera_id:={detected_id}')
         else:
             print(f'        No intrinsic files found in: {output_dir}')
             print(f'        Run intrinsic calibration first:')
-            print(f'          ./setup/intrinsic_calib.sh')
+            print(f'          ros2 launch roboscan_nsl3130 intrinsic_calib.launch.py')
         print()
         sys.exit(1)
 

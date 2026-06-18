@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Intrinsic calibration launcher — wraps setup/intrinsic_calib.sh.
+Intrinsic calibration launcher — runs scripts/intrinsic_calibration_node.py.
 camera_id (USB serial) is auto-detected for the intrinsic.yml path / output. The
 subscribed image topic is namespaced by this machine's IP last octet (cam_{octet}),
 matching camera.launch.py → `/cam_{octet}/camera/rgb/image_raw`.
@@ -97,10 +97,14 @@ def _launch_setup(context):
             output='screen',
         )]
 
-    sh_path = os.path.join(ws_root, 'src', 'NSL-3130AA-ROS2',
-                           'setup', 'intrinsic_calib.sh')
+    node_script = os.path.join(scripts_dir, 'intrinsic_calibration_node.py')
     return [ExecuteProcess(
-        cmd=['bash', sh_path, board_size, square_size, image_topic, camera_id],
+        cmd=['python3', node_script,
+             '--camera-id', camera_id,
+             '--size', board_size,
+             '--square', square_size,
+             '--image-topic', image_topic,
+             '--output-dir', calib_dir],
         output='screen',
     )]
 
