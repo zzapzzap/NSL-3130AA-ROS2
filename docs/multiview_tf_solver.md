@@ -152,13 +152,12 @@ edge 서비스에서 켤 때는 해당 edge의 `~/.ros/nsl_runtime.env`에
 주황 박스는 sliding window가 고른 depth, 초록/빨강 박스는 RANSAC refine 결과다.
 노란 점들은 실제 선택된 3D ROI 안의 LiDAR 점이다. id0 link가 사람/바닥/배경을 잡으면 여기서 바로 보인다.
 
-Color point cloud 표시는 기본적으로 live 스트림이 아니라 `mtf` 스냅샷 방식이다.
+Color point cloud와 ROI debug의 수명은 다르게 둔다.
 
-- `mvw`는 기본으로 `/cam_NN/multiview_debug/color_cloud_snapshot`을 본다.
-- 각 edge의 `cloud_snapshot_node.py`가 `/fleet/calibrate`를 받으면 최신 RGB point cloud 한 프레임만 발행한다.
-- RViz display는 `Decay Time: 30`으로 설정되어 있어 `mtf` 이후 30초가 지나거나 `mvw`를 다시 켜면 오래된
-  color cloud가 남지 않는다.
-- 계속 live color cloud를 보고 싶으면 `mvw cloud_display_mode:=live`로 실행한다.
+- `/cam_NN/camera/point_cloud_rgb`는 `mvw`에서 계속 live로 표시한다.
+- ROI debug marker/point는 `mtf` 또는 `/fleet/calibrate` 때 저장된 한 번의 calib snapshot만 보여준다.
+- ROI debug publisher는 volatile QoS라서 `mvw`를 다시 켜면 오래된 ROI가 다시 뜨지 않는다.
+- RViz의 ROI point cloud는 `Decay Time: 30`, ROI marker는 `--debug-roi-lifetime 30`으로 30초 뒤 사라진다.
 
 ---
 

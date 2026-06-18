@@ -43,7 +43,6 @@ def generate_launch_description():
     multiview_tf_script = os.path.join(repo_scripts, 'multiview_tf_node.py')
     detect_script       = os.path.join(repo_scripts, 'detect_camera_id.py')
     rgb_compressor_script = os.path.join(repo_scripts, 'rgb_compressor_node.py')
-    cloud_snapshot_script = os.path.join(repo_scripts, 'cloud_snapshot_node.py')
 
     # Sensor-tuning profiles. The driver reads the file in NSL_PARAMS_FILE
     # (see roboscan_publish_node.cpp). Defaults are the repo (zzapzzap) baseline.
@@ -287,18 +286,6 @@ def generate_launch_description():
                      '--frame-skip', LaunchConfiguration('rgb_compressed_frame_skip').perform(context)],
                 output='screen'))
 
-        if _is_true(context, 'color_cloud_snapshot'):
-            node_name = f'{ns}_color_cloud_snapshot' if ns else 'color_cloud_snapshot'
-            actions.append(ExecuteProcess(
-                cmd=['python3', cloud_snapshot_script,
-                     '--source-topic', _abs_topic(ns, LaunchConfiguration('point_cloud_rgb_topic').perform(context)),
-                     '--output-topic', _abs_topic(ns, LaunchConfiguration('color_cloud_snapshot_topic').perform(context)),
-                     '--trigger-topic', LaunchConfiguration('trigger_topic').perform(context),
-                     '--max-age-sec', LaunchConfiguration('color_cloud_snapshot_max_age').perform(context),
-                     '--debounce-sec', LaunchConfiguration('color_cloud_snapshot_debounce').perform(context),
-                     '--node-name', node_name],
-                output='screen'))
-
         # Extrinsic → TF. Runs outside the namespace (publishes serial-prefixed
         # frames to the global /tf), so it needs the absolute point-cloud topic.
         if _is_true(context, 'use_extrinsic_tf'):
@@ -440,13 +427,6 @@ def generate_launch_description():
         DeclareLaunchArgument('gray_topic',            default_value='camera/gray'),
         DeclareLaunchArgument('point_cloud_topic',     default_value='camera/point_cloud'),
         DeclareLaunchArgument('point_cloud_rgb_topic', default_value='camera/point_cloud_rgb'),
-        DeclareLaunchArgument(
-            'color_cloud_snapshot', default_value='true',
-            description='Publish one color PointCloud2 snapshot on trigger_topic for host RViz review'),
-        DeclareLaunchArgument('color_cloud_snapshot_topic',
-                              default_value='multiview_debug/color_cloud_snapshot'),
-        DeclareLaunchArgument('color_cloud_snapshot_max_age', default_value='1.0'),
-        DeclareLaunchArgument('color_cloud_snapshot_debounce', default_value='3.0'),
         DeclareLaunchArgument(
             'use_rgb_compressor', default_value='true',
             description='Publish a host-friendly JPEG mirror of RGB as camera/rgb/image_raw/compressed'),

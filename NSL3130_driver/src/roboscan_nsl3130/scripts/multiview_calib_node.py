@@ -199,6 +199,15 @@ def _latched_qos(depth=1):
     )
 
 
+def _reliable_volatile_qos(depth=1):
+    return QoSProfile(
+        history=QoSHistoryPolicy.KEEP_LAST,
+        depth=depth,
+        reliability=QoSReliabilityPolicy.RELIABLE,
+        durability=QoSDurabilityPolicy.VOLATILE,
+    )
+
+
 def _size_of(tag_id):
     return SIZE_BY_ID.get(int(tag_id), AUX_SIZE)
 
@@ -285,8 +294,10 @@ class MultiviewCalibNode(Node):
             base = f'/{self.ns}/multiview_debug' if self.ns else '/multiview_debug'
             self.roi_marker_topic = f'{base}/roi_markers'
             self.roi_points_topic = f'{base}/roi_points'
-            self.roi_marker_pub = self.create_publisher(MarkerArray, self.roi_marker_topic, _latched_qos(1))
-            self.roi_points_pub = self.create_publisher(PointCloud2, self.roi_points_topic, _latched_qos(1))
+            self.roi_marker_pub = self.create_publisher(MarkerArray, self.roi_marker_topic,
+                                                         _reliable_volatile_qos(1))
+            self.roi_points_pub = self.create_publisher(PointCloud2, self.roi_points_topic,
+                                                        _reliable_volatile_qos(1))
 
         self.sub = self.create_subscription(Image, args.image_topic, self._cb, 1)
         if args.wait_trigger:
@@ -711,6 +722,13 @@ class MultiviewCalibNode(Node):
         clear.header.stamp = stamp
         clear.action = Marker.DELETEALL
         arr.markers.append(clear)
+        roi_lifetime = max(0.0, float(getattr(self.a, 'debug_roi_lifetime', 30.0)))
+        lifetime_sec = int(roi_lifetime)
+        lifetime_nanosec = int(round((roi_lifetime - lifetime_sec) * 1e9))
+
+        def set_lifetime(marker):
+            marker.lifetime.sec = lifetime_sec
+            marker.lifetime.nanosec = lifetime_nanosec
 
         point_rows = []
         colors = [
@@ -754,6 +772,7 @@ class MultiviewCalibNode(Node):
                 m.scale.y = max(0.01, float(sy))
                 m.scale.z = max(0.01, float(sz))
                 m.color.r, m.color.g, m.color.b, m.color.a = [float(v) for v in rgba]
+                set_lifetime(m)
                 arr.markers.append(m)
 
             def add_label(marker_id, center):
@@ -785,6 +804,7 @@ class MultiviewCalibNode(Node):
                 m.text = (f'id{mid}{tag} {dbg["status"]}\\n'
                           f'{depth0:.3f}->{float(after):.3f}m d={delta:+.3f}\\n'
                           f'slide={dbg["slide_count"]} plane={dbg["inliers"]}/{dbg["used"]}')
+                set_lifetime(m)
                 arr.markers.append(m)
 
             def add_ray(marker_id):
@@ -809,6 +829,7 @@ class MultiviewCalibNode(Node):
                     p0 = Point(x=float(a[0]), y=float(a[1]), z=float(a[2]))
                     p1 = Point(x=float(b[0]), y=float(b[1]), z=float(b[2]))
                     m.points.extend([p0, p1])
+                set_lifetime(m)
                 arr.markers.append(m)
 
             sx = 2.0 * dbg['crop_x']
@@ -1180,6 +1201,8 @@ def main():
                          'points: /<ns>/multiview_debug/roi_markers and roi_points.')
     ap.add_argument('--debug-roi-max-points', type=int, default=3000,
                     help='Maximum selected LiDAR points to publish per tag ROI debug snapshot.')
+    ap.add_argument('--debug-roi-lifetime', type=float, default=30.0,
+                    help='Seconds before ROI debug markers expire in RViz. Point decay is set in mvw.')
     args, ros_args = ap.parse_known_args()
     args.display = str(args.display).strip().lower() in ('true', '1', 'yes')
     args.depth_refine = str(args.depth_refine).strip().lower() in ('true', '1', 'yes')
