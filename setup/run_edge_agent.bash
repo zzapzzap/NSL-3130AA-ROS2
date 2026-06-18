@@ -85,17 +85,33 @@ if ! wait_for_camera_ip "$edge_octet"; then
     exit 1
 fi
 
-sync_singleview_weight() {
-    [[ "${ROS_HUMANPOSE_SYNC_WEIGHTS_ON_START:-1}" =~ ^(1|true|yes)$ ]] || return 0
+singleview_weight_name() {
     local octet="${ROS_HUMANPOSE_OCTET:-${NSL_EDGE_OCTET:-}}"
-    local local_dir="${ROS_HUMANPOSE_WEIGHT_LOCAL_DIR:-${pose_src}/weight}"
     if [[ -z "$octet" ]]; then
         octet="$(detect_edge_octet)"
     fi
-    [[ -n "$octet" ]] || return 0
+    [[ -n "$octet" ]] || return 1
+    printf '3d_pose_cam%s.pkl\n' "$octet"
+}
+
+singleview_weight_dir() {
+    printf '%s\n' "${ROS_HUMANPOSE_WEIGHT_LOCAL_DIR:-${pose_src}/weight}"
+}
+
+singleview_weight_path() {
+    local file local_dir
+    file="$(singleview_weight_name)" || return 1
+    local_dir="$(singleview_weight_dir)"
+    printf '%s/%s\n' "$local_dir" "$file"
+}
+
+fetch_singleview_weight() {
+    [[ "${ROS_HUMANPOSE_SYNC_WEIGHTS_ON_START:-1}" =~ ^(1|true|yes)$ ]] || return 1
+    local file local_dir tmp
+    file="$(singleview_weight_name)" || return 1
+    local_dir="$(singleview_weight_dir)"
     mkdir -p "$local_dir"
-    local file="3d_pose_cam${octet}.pkl"
-    local tmp="${local_dir}/.${file}.tmp"
+    tmp="${local_dir}/.${file}.tmp"
     # SSH-free: fetch from the host's weight server over ROS2
     # (/fleet/weights/get, nsl-weight-server@.service on the host). No keys
     # needed — a new edge only has to join the DDS domain.
@@ -103,13 +119,46 @@ sync_singleview_weight() {
     if ros2 run ros_humanpose weight_client.py get "$file" "$tmp" \
             --wait "${ROS_HUMANPOSE_WEIGHT_WAIT_SEC:-15}"; then
         mv "$tmp" "${local_dir}/${file}"
+        return 0
     else
-        rm -f "$tmp"
-        echo "[edge-agent] weight fetch skipped (weight server unreachable); using local copy if present"
+        rm -f "$tmp" "${tmp}.part"
+        echo "[edge-agent] weight fetch skipped; waiting for local or host copy if needed"
+        return 1
     fi
 }
 
-sync_singleview_weight
+sync_singleview_weight() {
+    fetch_singleview_weight || true
+}
+
+wait_for_singleview_weight() {
+    [[ "${ROS_HUMANPOSE_WAIT_FOR_SINGLEVIEW_WEIGHT:-1}" =~ ^(1|true|yes)$ ]] || return 0
+    local camera_pid="$1"
+    local retry_sec="${ROS_HUMANPOSE_WEIGHT_RETRY_SEC:-15}"
+    local path file
+
+    path="$(singleview_weight_path)" || {
+        echo "[edge-agent] WARNING: no edge octet; cannot derive single-view weight name"
+        return 0
+    }
+    file="$(basename "$path")"
+
+    while [[ ! -s "$path" ]]; do
+        echo "[edge-agent] single-view weight missing: ${path}"
+        fetch_singleview_weight || true
+        if [[ -s "$path" ]]; then
+            break
+        fi
+        if ! kill -0 "$camera_pid" 2>/dev/null; then
+            echo "[edge-agent] camera process exited while waiting for ${file}"
+            return 1
+        fi
+        echo "[edge-agent] camera stays up; waiting ${retry_sec}s for ${file}"
+        sleep "$retry_sec"
+    done
+
+    echo "[edge-agent] single-view weight ready: ${path}"
+}
 
 camera_args=(
     namespace:="${NSL_EDGE_NAMESPACE:-auto}"
@@ -125,8 +174,12 @@ camera_args=(
     rgb_compressed_width:="${NSL_RGB_COMPRESSED_WIDTH:-0}"
     rgb_compressed_frame_skip:="${NSL_RGB_COMPRESSED_FRAME_SKIP:-0}"
 )
-if [[ -n "${NSL_CALIB_ARGS:-}" ]]; then
-    camera_args+=(calib_args:="${NSL_CALIB_ARGS}")
+calib_args="${NSL_CALIB_ARGS:-}"
+if [[ -z "$calib_args" && "${NSL_DEBUG_ROI:-1}" =~ ^(1|true|yes)$ ]]; then
+    calib_args="--debug-roi true"
+fi
+if [[ -n "$calib_args" ]]; then
+    camera_args+=(calib_args:="$calib_args")
 fi
 
 pose_args=(
@@ -134,21 +187,32 @@ pose_args=(
     use_rviz:=false
 )
 
+camera_pid=""
+pose_pid=""
+shutdown() {
+    echo "[edge-agent] stopping child processes"
+    local pids=()
+    [[ -n "${camera_pid:-}" ]] && pids+=("$camera_pid")
+    [[ -n "${pose_pid:-}" ]] && pids+=("$pose_pid")
+    if ((${#pids[@]})); then
+        kill "${pids[@]}" 2>/dev/null || true
+        wait "${pids[@]}" 2>/dev/null || true
+    fi
+}
+trap shutdown INT TERM EXIT
+
 echo "[edge-agent] starting camera.launch.py ${camera_args[*]}"
 ros2 launch roboscan_nsl3130 camera.launch.py "${camera_args[@]}" &
 camera_pid=$!
 
 sleep "${NSL_POSE_START_DELAY_SEC:-8}"
+if ! wait_for_singleview_weight "$camera_pid"; then
+    echo "[edge-agent] exiting so systemd can retry after RestartSec"
+    exit 1
+fi
 echo "[edge-agent] starting singleview_pose.launch.py ${pose_args[*]}"
 ros2 launch ros_humanpose singleview_pose.launch.py "${pose_args[@]}" &
 pose_pid=$!
-
-shutdown() {
-    echo "[edge-agent] stopping child processes"
-    kill "${camera_pid}" "${pose_pid}" 2>/dev/null || true
-    wait "${camera_pid}" "${pose_pid}" 2>/dev/null || true
-}
-trap shutdown INT TERM EXIT
 
 wait -n "${camera_pid}" "${pose_pid}"
 exit $?

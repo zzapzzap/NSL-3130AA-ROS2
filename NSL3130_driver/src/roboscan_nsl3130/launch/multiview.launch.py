@@ -217,8 +217,9 @@ def _resolve_cameras(context, calib_dir):
         return _sort_ids(ids)
     live = _detect_live_cameras()
     if live:
-        print(f'[multiview] cameras (live): {_sort_ids(live)}')
-        return _sort_ids(live)
+        live_sorted = _sort_ids(live)
+        print(f'[multiview] cameras (live): {live_sorted}')
+        return live_sorted
     calib = _calib_cameras(calib_dir)
     if calib:
         print(f'[multiview] no live cloud found; falling back to calib_output: {_sort_ids(calib)}')
@@ -267,7 +268,7 @@ def _camera_group(cam_id, color, show_rgb_image, cloud_topic_depth, cloud_filter
           Enabled: true
           Max Color: 255; 255; 255
           Min Color: 0; 0; 0
-          Name: PointCloud
+          Name: RGB PointCloud
           Position Transformer: XYZ
           Size (Pixels): {cloud_point_size_pixels}
           Size (m): 0.009999999776482582
@@ -309,6 +310,16 @@ def _camera_group(cam_id, color, show_rgb_image, cloud_topic_depth, cloud_filter
             Reliability Policy: Reliable
             Value: /cam_{cam_id}/multiview_debug/roi_points
           Use Fixed Frame: true
+          Value: true
+        - Class: rviz_default_plugins/MarkerArray
+          Enabled: true
+          Name: ROI Boxes cam_{cam_id}
+          Topic:
+            Depth: 1
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /cam_{cam_id}/multiview_debug/roi_markers
           Value: true
 {image_display.rstrip()}
       Enabled: true

@@ -113,6 +113,23 @@ def _rotmat_to_quat(R: np.ndarray) -> np.ndarray:
     return q / np.linalg.norm(q)
 
 
+def _camera_color_rgb(ns):
+    """Stable camera color matching the host multiview RViz palette."""
+    palette = [
+        (255, 100, 100), (100, 255, 100), (100, 100, 255), (255, 255, 100),
+        (255, 100, 255), (100, 255, 255), (255, 180, 100), (180, 120, 255),
+    ]
+    name = str(ns or '')
+    tail = name[4:] if name.startswith('cam_') else name
+    if tail.isdigit():
+        return palette[(int(tail) - 51) % len(palette)]
+    return palette[sum(ord(c) for c in name) % len(palette)]
+
+
+def _rgba(rgb, alpha):
+    return (rgb[0] / 255.0, rgb[1] / 255.0, rgb[2] / 255.0, float(alpha))
+
+
 def _mean_rotation(rvecs: np.ndarray) -> np.ndarray:
     """Chordal-L2 mean of a stack of rotation vectors → 3x3 rotation matrix."""
     if _Rot is not None:
@@ -727,6 +744,7 @@ class MultiviewCalibNode(Node):
             return
         ns, camera_frame, _lidar_frame = self._resolve_frames()
         stamp = self.get_clock().now().to_msg()
+        camera_rgb = _camera_color_rgb(ns)
 
         arr = MarkerArray()
         clear = Marker()
@@ -743,10 +761,6 @@ class MultiviewCalibNode(Node):
             marker.lifetime.nanosec = lifetime_nanosec
 
         point_rows = []
-        colors = [
-            (255, 64, 64), (64, 220, 255), (255, 220, 64), (120, 255, 120),
-            (220, 120, 255), (255, 150, 64), (180, 180, 255), (255, 255, 255),
-        ]
 
         def rgb_float(rgb):
             packed = (int(rgb[0]) << 16) | (int(rgb[1]) << 8) | int(rgb[2])
@@ -808,9 +822,7 @@ class MultiviewCalibNode(Node):
                 m.pose.position.z = float(label_pos[2])
                 m.pose.orientation.w = 1.0
                 m.scale.z = 0.08
-                m.color.r = 1.0
-                m.color.g = 1.0
-                m.color.b = 1.0
+                m.color.r, m.color.g, m.color.b, _ = _rgba(camera_rgb, 1.0)
                 m.color.a = 1.0
                 tag = ' REF' if mid == rid else ''
                 m.text = (f'id{mid}{tag} {dbg["status"]}\\n'
@@ -829,9 +841,7 @@ class MultiviewCalibNode(Node):
                 m.action = Marker.ADD
                 m.frame_locked = True
                 m.scale.x = 0.012
-                m.color.r = 1.0
-                m.color.g = 1.0
-                m.color.b = 0.0
+                m.color.r, m.color.g, m.color.b, _ = _rgba(camera_rgb, 1.0)
                 m.color.a = 0.9
                 for a, b in ((np.zeros(3), t_mono),
                              (t_mono, u * lam0 if lam0 is not None else t_mono),
@@ -848,14 +858,13 @@ class MultiviewCalibNode(Node):
             sy = 2.0 * dbg['crop_y']
             z_slide = 2.0 * dbg['z_band']
             z_refine = 2.0 * max(dbg['z_band'], dbg['depth_band'])
-            add_cube(base + 1, 'mono', t_mono, sx, sy, z_slide, (0.0, 0.35, 1.0, 0.18))
+            add_cube(base + 1, 'mono', t_mono, sx, sy, z_slide, _rgba(camera_rgb, 0.12))
             if lam0 is not None:
-                add_cube(base + 2, 'slide', u * float(lam0), sx, sy, z_slide, (1.0, 0.55, 0.0, 0.22))
+                add_cube(base + 2, 'slide', u * float(lam0), sx, sy, z_slide, _rgba(camera_rgb, 0.22))
             final_lam = lam_corr if lam_corr is not None else lam0
             if final_lam is not None:
-                color = (0.0, 1.0, 0.25, 0.28) if ok else (1.0, 0.0, 0.0, 0.28)
                 final_center = u * float(final_lam)
-                add_cube(base + 3, 'refined', final_center, sx, sy, z_refine, color)
+                add_cube(base + 3, 'refined', final_center, sx, sy, z_refine, _rgba(camera_rgb, 0.35 if ok else 0.20))
                 add_label(base + 4, final_center)
             else:
                 add_label(base + 4, t_mono)
@@ -863,7 +872,7 @@ class MultiviewCalibNode(Node):
 
             pts = np.asarray(dbg.get('points', []), dtype=np.float32).reshape(-1, 3)
             if pts.size:
-                rgb = rgb_float(colors[row % len(colors)])
+                rgb = rgb_float(camera_rgb)
                 point_rows.extend((float(p[0]), float(p[1]), float(p[2]), rgb) for p in pts)
 
         self.roi_marker_pub.publish(arr)

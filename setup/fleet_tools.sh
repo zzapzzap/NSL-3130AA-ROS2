@@ -275,9 +275,13 @@ mtr() {
 
 # ── mtf : multi tf / anchor-camera re-calibration ───────────────────────────
 mtf() {
-    local o u out wait_sec="${NSL_CALIB_WAIT_SEC:-5}"
-    echo "[mtf] broadcasting /fleet/calibrate → edges re-anchor cameras to stag_marker"
-    ros2 topic pub --once /fleet/calibrate std_msgs/msg/Empty "{}" >/dev/null 2>&1
+    local o u out observe nosave
+    local wait_sec="${NSL_CALIB_WAIT_SEC:-8}"
+    local pub_times="${NSL_CALIB_PUB_TIMES:-5}"
+    local pub_rate="${NSL_CALIB_PUB_RATE:-2}"
+    local log_since="${NSL_CALIB_LOG_SINCE:-60 sec ago}"
+    echo "[mtf] broadcasting /fleet/calibrate (${pub_times} pulses @ ${pub_rate} Hz) → edges re-anchor cameras to stag_marker"
+    ros2 topic pub -t "$pub_times" -r "$pub_rate" /fleet/calibrate std_msgs/msg/Empty "{}" >/dev/null 2>&1
     echo "[mtf] waiting ${wait_sec}s for edges to calibrate, then reading each edge's result…"
     sleep "$wait_sec"
     for o in $(_nsl_edges); do
@@ -286,20 +290,33 @@ mtf() {
             echo "  edge $o: LOGIN-FAIL"
             continue
         fi
-        if ! out="$(_nsl_sudo "$o" "journalctl -u nsl-edge-agent@${u}.service --since '25 sec ago' --no-pager 2>/dev/null")"; then
+        if ! out="$(_nsl_sudo "$o" "journalctl -u nsl-edge-agent@${u}.service --since '${log_since}' --no-pager 2>/dev/null")"; then
             echo "  edge $o: JOURNAL-FAIL (${u})"
             continue
         fi
-        printf '%s\n' "$out" \
-            | grep -iE 'multiview.yml|tags, ref|needs >=|not saving|reproj' \
-            | tail -2 \
-            | sed 's#.*roboscan_publish_node.*##' \
-            | grep -v '^$' \
-            | sed "s/^/  edge $o: /"
+        observe="$(printf '%s\n' "$out" | grep -i '\[observe\] published' | tail -1 || true)"
+        if [[ -n "$observe" ]]; then
+            printf '  edge %s: %s\n' "$o" "$(
+                printf '%s\n' "$observe" \
+                    | sed -E 's/.*\[observe\] published ([0-9]+) tag obs on ([^ ]+) \(ref id ([0-9]+)\).*/OK: \1 tags -> \2 (ref id \3)/'
+            )"
+            continue
+        fi
+        nosave="$(printf '%s\n' "$out" | grep -iE 'needs >=|not saving' | tail -1 || true)"
+        if [[ -n "$nosave" ]]; then
+            printf '  edge %s: %s\n' "$o" "$(
+                printf '%s\n' "$nosave" \
+                    | sed -E 's/.*multiview_calib[^:]*: //'
+            )"
+            continue
+        fi
+        if printf '%s\n' "$out" | grep -qi 'trigger received'; then
+            echo "  edge $o: TRIGGERED, but no tag observation yet"
+        else
+            echo "  edge $o: NO-TRIGGER"
+        fi
     done
-    echo "[mtf] TF auto-re-publishes (/tf_static) within ~1-2 s → host RViz re-anchors live."
-    echo "      An edge that printed 'needs >= N views / not saving' could NOT see its STag markers"
-    echo "      (a restart will NOT help that — make the markers visible to that camera and re-run mtf)."
+    echo "[mtf] done. If an edge says NO-TRIGGER, re-run mtf; if it says not saving, make its STag markers visible."
 }
 
 # ── viewers ─────────────────────────────────────────────────────────────────

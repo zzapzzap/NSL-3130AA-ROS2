@@ -532,8 +532,10 @@ def run_node(args):
 
         def _on_trigger(self, _msg):
             # solve a settle window after the broadcast so every edge's fresh snapshot lands
+            already_armed = self._solve_at is not None and time.monotonic() < self._solve_at
             self._arm(args.settle)
-            self.get_logger().info(f'[mv_solver] trigger → solving in {args.settle:.0f}s ...')
+            if not already_armed:
+                self.get_logger().info(f'[mv_solver] trigger → solving in {args.settle:.0f}s ...')
 
         def solve_now(self, why):
             obs = list(self.obs.values())
@@ -870,7 +872,7 @@ def main():
                          'shown only after matching is complete. Empty disables.')
     ap.add_argument('--roi-debug-flush-delay', type=float, default=1.0,
                     help='Seconds to wait after solver output/writeback before flushing ROI debug markers.')
-    ap.add_argument('--roi-debug-flush-count', type=int, default=3,
+    ap.add_argument('--roi-debug-flush-count', type=int, default=1,
                     help='Number of ROI debug flush pulses to publish.')
     # Compatibility no-ops: accepted so old aliases / solver_args do not fail, but the
     # deterministic chain path no longer runs BA, triangulation, or LiDAR-prior gating.
