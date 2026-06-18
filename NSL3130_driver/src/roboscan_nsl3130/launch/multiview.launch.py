@@ -281,18 +281,6 @@ def _camera_group(cam_id, color, show_rgb_image, cloud_topic_depth, cloud_filter
             Value: /cam_{cam_id}/camera/point_cloud_rgb
           Use Fixed Frame: true
           Value: true
-        - Class: rviz_default_plugins/MarkerArray
-          Enabled: true
-          Marker Topic:
-            Depth: 1
-            Durability Policy: Volatile
-            History Policy: Keep Last
-            Reliability Policy: Reliable
-            Value: /cam_{cam_id}/multiview_debug/roi_markers
-          Name: ROI Markers
-          Namespaces:
-            {{}}
-          Value: true
         - Alpha: 1
           Autocompute Intensity Bounds: true
           Autocompute Value Bounds:
@@ -418,6 +406,19 @@ Visualization Manager:
       Show Axes: true
       Show Names: true
       Update Interval: 0
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /visualization_marker_array
+      Name: Pose Training Bounds
+      Namespaces:
+        pose_training_bounds: true
+        pose_training_bounds_outline: true
       Value: true
 {groups}  Enabled: true
   Global Options:
