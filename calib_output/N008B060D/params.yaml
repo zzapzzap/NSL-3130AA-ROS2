@@ -10,7 +10,7 @@ IntegrationTimeHdr2: 80
 IntegrationTimeGray: 100
 MinAmplitude: 5
 Modulation: MOD_12Mhz
-Channel: 0
+Channel: 1
 MedianFilter: true
 GaussianFilter: true
 TemporalFilterFactor: 300

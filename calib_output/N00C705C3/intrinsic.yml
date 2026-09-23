@@ -1,0 +1,18 @@
+%YAML:1.0
+---
+camera_id: N00C705C3
+image_width: 1920
+image_height: 1080
+distortion_model: equidistant
+camera_matrix: !!opencv-matrix
+   rows: 3
+   cols: 3
+   dt: d
+   data: [ 995.7012403738737, 0., 914.60408465909052, 0.,
+       997.19320059211589, 536.78489120311383, 0., 0., 1. ]
+distortion_coefficients: !!opencv-matrix
+   rows: 1
+   cols: 4
+   dt: d
+   data: [ 0.067676445345982883, 0.0059764628802180166,
+       -0.0016225266863085482, -0.0014130902267237583 ]
