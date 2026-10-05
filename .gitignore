@@ -3,3 +3,10 @@
 **/.pytest_cache/
 **/*.pyc
 **/*.egg-info/
+/calib_output/**
+!/calib_output/**/
+!/calib_output/**/*.yaml
+!/calib_output/**/*.yml
+!/calib_output/**/*.xml
+/calib_output/**/.*.lock
+/calib_output/runtime/

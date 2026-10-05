@@ -80,7 +80,7 @@ def _launch_setup(context):
     scripts_dir   = os.path.join(get_package_prefix('roboscan_nsl3130'), 'lib', 'roboscan_nsl3130')
     detect_script = os.path.join(scripts_dir, 'detect_camera_id.py')
     node_script   = os.path.join(scripts_dir, 'extrinsic_calibration_node.py')
-    calib_dir     = os.environ.get('NSL_CALIB_DIR', os.path.join(ws_root, 'config', 'calibration'))
+    calib_dir     = os.environ.get('NSL_CALIB_DIR', os.path.join(ws_root, 'controller', 'src', 'NSL-3130AA-ROS2', 'calib_output'))
 
     if not camera_id:
         try:

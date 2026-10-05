@@ -1,0 +1,45 @@
+%YAML:1.0
+---
+camera_id: N00C705C3
+namespace: cam_53
+camera_frame: cam_53_camera_frame
+lidar_frame: cam_53_lidar_frame
+reference_frame: stag_marker
+library_hd: 21
+marker_id: 2
+marker_size: 0.19
+num_frames: 10
+reproj_rmse_px: 0.33845178417870664
+depth_refined: 1
+bundle_solved: 1
+chain_solved: 1
+R: !!opencv-matrix
+   rows: 3
+   cols: 3
+   dt: d
+   data: [ 0.71909740698257796, -0.69371628027408005,
+       0.040701864252471125, -0.23389665986673919, -0.29677650720493576,
+       -0.92585963151787842, 0.65436325674209095, 0.65626323015534904,
+       -0.37566913763570176 ]
+t: !!opencv-matrix
+   rows: 3
+   cols: 1
+   dt: d
+   data: [ -1.8838278159005919, 0.48102829798395802, 3.8487942259059666 ]
+tag_count: 1
+tag_0_id: 2
+tag_0_size: 0.19
+tag_0_R: !!opencv-matrix
+   rows: 3
+   cols: 3
+   dt: d
+   data: [ 0.71909740698257796, -0.69371628027408005,
+       0.040701864252471125, -0.23389665986673919, -0.29677650720493576,
+       -0.92585963151787842, 0.65436325674209095, 0.65626323015534904,
+       -0.37566913763570176 ]
+tag_0_t: !!opencv-matrix
+   rows: 3
+   cols: 1
+   dt: d
+   data: [ -1.8838278159005919, 0.48102829798395802, 3.8487942259059666 ]
+tag_0_depth_delta_m: 0.

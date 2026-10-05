@@ -41,7 +41,7 @@ def generate_launch_description():
     rviz_config = os.path.join(pkg_share, 'rviz', 'roboscan_nsl3130rviz.rviz')
 
     ws_root = _project_root(pkg_share)
-    calib_dir = os.environ.get('NSL_CALIB_DIR', os.path.join(ws_root, 'config', 'calibration'))
+    calib_dir = os.environ.get('NSL_CALIB_DIR', os.path.join(ws_root, 'controller', 'src', 'NSL-3130AA-ROS2', 'calib_output'))
     repo_scripts = os.path.join(get_package_prefix('roboscan_nsl3130'), 'lib', 'roboscan_nsl3130')
     extrinsic_tf_script = os.path.join(repo_scripts, 'extrinsic_tf_node.py')
     multiview_tf_script = os.path.join(repo_scripts, 'multiview_tf_node.py')
@@ -115,7 +115,7 @@ def generate_launch_description():
             if octet is None:
                 raise ValueError('camera_ip:=auto requires an Edge LAN address in 192.168.3.161-165; set camera_ip explicitly.')
             import importlib.util
-            config_script = os.path.join(ws_root, 'setup', 'camera_network.py')
+            config_script = os.path.join(ws_root, 'controller', 'src', 'NSL-3130AA-ROS2', 'setup', 'camera_network.py')
             spec = importlib.util.spec_from_file_location('sirius_camera_network', config_script)
             config_module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(config_module)
@@ -261,6 +261,8 @@ def generate_launch_description():
         explicit_profile = LaunchConfiguration('profile_dir').perform(context).strip()
         if explicit_profile:
             profile_dir = str(Path(explicit_profile).expanduser().resolve())
+        overrides = {} if explicit_profile else compact.runtime_override_files(
+            ns, serial, profile_dir, calib_dir, detected_serial=detected_serial)
         camera_ip, camera_gateway = _resolve_camera_network(context, ip_octet)
         params_file = _resolve_params_file(context, serial, profile_dir)
 
@@ -274,6 +276,8 @@ def generate_launch_description():
             parameters=params if params else None,
             additional_env={'NSL_CALIB_DIR': calib_dir,
                             'NSL_PROFILE_DIR': profile_dir,
+                            'NSL_INTRINSIC_FILE': str(overrides.get('intrinsic.yml', '')),
+                            'NSL_EXTRINSIC_FILE': str(overrides.get('extrinsic.yml', '')),
                             'NSL_PARAMS_FILE': params_file,
                             'NSL_CAMERA_ID': serial,
                             'NSL_CAMERA_IP': camera_ip,
@@ -291,6 +295,11 @@ def generate_launch_description():
                 ('roboscanPointCloud',    LaunchConfiguration('point_cloud_topic').perform(context)),
                 ('roboscanPointCloudRgb', LaunchConfiguration('point_cloud_rgb_topic').perform(context)),
             ])]
+
+        if ns:
+            actions.append(ExecuteProcess(
+                cmd=['python3', os.path.join(repo_scripts, 'camera_device_info_node.py'),
+                     '--namespace', ns, '--calib-dir', calib_dir], output='screen'))
 
         # Optional compressed RGB mirror for host-side monitoring/recording.
         # Local edge inference still consumes the raw RGB topic.

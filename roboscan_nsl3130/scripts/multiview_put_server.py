@@ -30,20 +30,54 @@ ALLOWED = 'multiview.yml'
 
 def sync_completed_writeback(serial, namespace, calib_dir, installed_file):
     """Update the global registry only after the SDK file was verified and installed."""
-    from sirius_config.store import default_config, update_config
+    from sirius_config.store import update_config
     from sirius_config.sync import sync_profiles
-    config = default_config()
+    from pathlib import Path
+    from detect_camera_id import detect_camera_serials
+    from sirius_camera_config import inventory, is_native
+    current, config = inventory()
+    if config is None or not config.is_file():
+        return {'updated_profiles': [], 'errors': [], 'meaning': 'SDK file installed; no inventory configured'}
+    actual = detect_camera_serials()
+    physical_verified = len(actual) == 1 and actual[0] == serial
+    if is_native(current):
+        def remember_native(data):
+            camera = data.get('cameras', {}).get(namespace)
+            if not isinstance(camera, dict):
+                return
+            if physical_verified:
+                camera.update(serial=serial, serial_verified=True, serial_source='usb_sysfs')
+                camera['parameters'] = os.path.relpath(Path(installed_file).resolve().parent, config.parent)
+            elif camera.get('serial') != serial:
+                camera.update(serial_candidate=serial, serial_verified=False,
+                              serial_source='writeback_identity')
+        update_config(config, remember_native)
+        return sync_profiles(config, Path(calib_dir).resolve(),
+                             min_mtime=os.stat(installed_file).st_mtime)
+    cache_path = (Path(calib_dir).resolve()/'runtime'/namespace/'device_info.yaml'
+                  if current.get('schema_version') == 2
+                  else config.parent/'cameras'/f'{namespace}.yaml')
+    def remember(data):
+        if physical_verified:
+            data['serial'] = serial
+            data['serial_verified'] = True
+            data['serial_source'] = 'usb_sysfs'
+        elif data.get('serial') != serial:
+            data['serial_verified'] = False
+            data['serial_source'] = 'writeback_identity'
+            data['serial_candidate'] = serial
+    if namespace:
+        update_config(cache_path, remember)
     def bind(data):
         camera = data.get('cameras', {}).get(namespace)
         if isinstance(camera, dict):
-            camera['serial'] = serial
             if data.get('schema_version') == 2:
-                # The serial is observed by this receiver; do not infer it from the Edge IP.
-                from pathlib import Path
-                profile = Path(installed_file).expanduser().resolve().parent
-                base = config.parent.resolve()
-                camera['parameters'] = str(profile.relative_to(base)) if profile.is_relative_to(base) else str(profile)
+                if physical_verified:
+                    camera['serial'] = serial
+                    # Keep actual SDK output canonical and the public pointer portable.
+                    camera['parameters'] = os.path.relpath(Path(installed_file).resolve().parent, config.parent)
             else:
+                camera['serial'] = serial
                 camera['binding_status'] = 'observed_verified_writeback'
     update_config(config, bind)
     from pathlib import Path

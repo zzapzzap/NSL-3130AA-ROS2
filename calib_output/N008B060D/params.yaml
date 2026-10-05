@@ -1,0 +1,23 @@
+MaxDistance: 12500
+PointColud EDGE: 200
+ImageType: RGB_DISTANCE
+LensType: LENS_SF
+LidarAngle: 0
+HDRMode: HDR_None
+IntegrationTime3D: 350
+IntegrationTimeHdr1: 700
+IntegrationTimeHdr2: 80
+IntegrationTimeGray: 100
+MinAmplitude: 5
+Modulation: MOD_12Mhz
+Channel: 1
+MedianFilter: true
+GaussianFilter: true
+TemporalFilterFactor: 300
+TemporalFilterThreshold: 200
+EdgeFilterThreshold: 0
+InterferenceDetectionLimit: 0
+UseLastValue: false
+DualBeam: DB_6Mhz
+DualBeamOption: DB_CORRECTION
+GrayscaleLED: false

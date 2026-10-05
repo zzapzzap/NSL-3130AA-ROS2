@@ -8,8 +8,9 @@ import sys
 from pathlib import Path
 
 
-def detect_camera_serial() -> str:
-    usb_sys = Path('/sys/bus/usb/devices')
+def detect_camera_serials(usb_sys=Path('/sys/bus/usb/devices')) -> list:
+    usb_sys = Path(usb_sys)
+    serials = set()
     try:
         for dev in usb_sys.iterdir():
             vid_f = dev / 'idVendor'
@@ -22,10 +23,15 @@ def detect_camera_serial() -> str:
             if vid == '1fc9' and pid in ('0099', '0094'):
                 serial = ser_f.read_text().strip()
                 if serial:
-                    return serial
+                    serials.add(serial)
     except Exception:
         pass
-    return ''
+    return sorted(serials)
+
+
+def detect_camera_serial() -> str:
+    serials = detect_camera_serials()
+    return serials[0] if len(serials) == 1 else ''
 
 
 if __name__ == '__main__':

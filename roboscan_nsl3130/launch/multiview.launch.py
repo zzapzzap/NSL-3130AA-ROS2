@@ -70,7 +70,7 @@ def _scripts_dir():
 
 def _calib_dir():
     return os.environ.get(
-        'NSL_CALIB_DIR', os.path.join(_ws_root(), 'config', 'calibration'))
+        'NSL_CALIB_DIR', os.path.join(_ws_root(), 'controller', 'src', 'NSL-3130AA-ROS2', 'calib_output'))
 
 
 def _write_tmp(content):

@@ -1,0 +1,17 @@
+[Unit]
+Description=NSL FastDDS discovery server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+Environment=ROS_LOG_DIR=/home/%i/.ros/log
+ExecStart=/home/%i/SiriusRobotDT/controller/src/NSL-3130AA-ROS2/setup/run_discovery_server.bash
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGINT
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,18 @@
+%YAML:1.0
+---
+camera_id: N0078060D
+image_width: 1920
+image_height: 1080
+distortion_model: equidistant
+camera_matrix: !!opencv-matrix
+   rows: 3
+   cols: 3
+   dt: d
+   data: [ 9.9305317079119925e+02, 0., 9.3745398225846236e+02, 0.,
+       9.9339858394795317e+02, 5.4130425226804869e+02, 0., 0., 1. ]
+distortion_coefficients: !!opencv-matrix
+   rows: 1
+   cols: 4
+   dt: d
+   data: [ 4.9952692026423294e-02, 7.2729149054150274e-02,
+       -1.0872479069979475e-01, 6.5131610834116518e-02 ]

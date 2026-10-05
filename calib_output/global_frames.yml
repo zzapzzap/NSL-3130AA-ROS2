@@ -1,0 +1,131 @@
+schema_version: 1
+convention: T_parent_child, row-major 4x4; translation in metres
+map_source:
+  mesh: package://sirius_localization/assets/workcell/workcell_gs_mesh_10pct.obj
+  units: m
+  matrix_order: row-major
+global:
+  anchor:
+    id_7:
+      parent: map
+      child: id_7
+      tf: [-0.3135489067260294, -0.9366687285847275, -0.15600889712571753, -1.2489852472786032, 0.9368475618955906, -0.27833763746440826, -0.21176592110398634, 4.7284252584048785, 0.15493136822864442, -0.21255552795023389, 0.9647882766061155, 0.44472945797153085, 0.0, 0.0, 0.0, 1.0]
+      source: T_map_id_0 = original manual T_map_stag; T_map_id_7 = T_map_stag @ T_stag_tag_7
+      verification: derived_from_recorded_tf_manual_global_draft
+    id_0:
+      parent: map
+      child: id_0
+      tf: [0.35721705615077426, 0.9209002111046519, -0.15600889712571747, -1.2362375259399414, -0.9227334413878298, 0.3220530869337433, -0.2117659211039863, 4.271632671356201, -0.1447721345409659, 0.21960102546175625, 0.9647882766061153, 0.5750811100006104, 0.0, 0.0, 0.0, 1.0]
+      source: T_map_id_0 = original manual T_map_stag; T_map_id_7 = T_map_stag @ T_stag_tag_7
+      verification: manual_draft_capture_reference
+  cameras:
+    cam_161:
+      parent: map
+      child: cam_161_lidar_frame
+      tf: [0.4089970271683044, 0.9104006964008371, 0.062385925979828644, -1.0557000637054446, -0.8961658294150935, 0.4136115193852769, -0.1606621212998281, 7.378984451293945, -0.17207044474937358, 0.009802194890641476, 0.9850358770212784, 2.4506893157958984, 0.0, 0.0, 0.0, 1.0]
+      source: Saved manual bag_16-26-42_review01; legacy cam_52 renamed cam_161
+      verification: manual_draft_not_physically_rechecked
+    cam_162:
+      parent: map
+      child: cam_162_lidar_frame
+      tf: [0.9502230576215855, -0.23724413407356265, 0.2019687144385773, -3.950230598449707, 0.2252240120885281, 0.9709432142469593, 0.08089140304464351, 1.609974861145019, -0.2152911636436404, -0.03137667215416258, 0.9760457055391918, 2.4045739173889165, 0.0, 0.0, 0.0, 1.0]
+      source: Saved manual bag_16-26-42_review01; legacy cam_53 renamed cam_162
+      verification: manual_draft_not_physically_rechecked
+    cam_163:
+      parent: map
+      child: cam_163_lidar_frame
+      tf: null
+      source: No saved map pose
+      verification: unavailable
+    cam_164:
+      parent: map
+      child: cam_164_lidar_frame
+      tf: null
+      source: No saved map pose
+      verification: unavailable
+    cam_165:
+      parent: map
+      child: cam_165_lidar_frame
+      tf: null
+      source: No saved map pose
+      verification: unavailable
+relative:
+  id_7:
+    cam_161:
+      parent: id_7
+      child: cam_161_lidar_frame
+      tf: [-0.9944704525012199, 0.10355446793498009, -0.01746399933357448, 2.73335166490683, -0.09708352146860524, -0.9699510266442363, -0.22309145158667215, -1.3451724274868824, -0.04004134065281509, -0.22016239025432296, 0.9746410687818515, 1.3438742369286376, 0.0, 0.0, 0.0, 1.0]
+      source: inverse(global.anchor.id_7.tf) @ global.cameras.cam_161.tf
+      verification: derived_from_manual_draft
+    cam_162:
+      parent: id_7
+      child: cam_162_lidar_frame
+      tf: [-0.1202961888084786, 0.979152191124955, 0.16367594072848984, -1.7708987412939017, -0.9069712157279848, -0.04136159382367941, -0.4191568112261429, 2.981578391028295, -0.4036484123579062, -0.19887233385155972, 0.8930384952673528, 2.9726347873123453, 0.0, 0.0, 0.0, 1.0]
+      source: inverse(global.anchor.id_7.tf) @ global.cameras.cam_162.tf
+      verification: derived_from_manual_draft
+    cam_163:
+      parent: id_7
+      child: cam_163_lidar_frame
+      tf: null
+      source: inverse(global.anchor.id_7.tf) @ global.cameras.cam_163.tf
+      verification: unavailable
+    cam_164:
+      parent: id_7
+      child: cam_164_lidar_frame
+      tf: null
+      source: inverse(global.anchor.id_7.tf) @ global.cameras.cam_164.tf
+      verification: unavailable
+    cam_165:
+      parent: id_7
+      child: cam_165_lidar_frame
+      tf: null
+      source: inverse(global.anchor.id_7.tf) @ global.cameras.cam_165.tf
+      verification: unavailable
+  id_0:
+    cam_161:
+      parent: id_0
+      child: cam_161_lidar_frame
+      tf: [0.9979338994276281, -0.057861608671608535, 0.027927882395610976, -3.07430214423575, 0.0502456307741744, 0.973745632164498, 0.2220243689973434, 1.5788747053591885, -0.04004134065281509, -0.2201623902543229, 0.9746410687818513, 1.1233681462118166, 0.0, 0.0, 0.0, 1.0]
+      source: inverse(global.anchor.id_0.tf) @ global.cameras.cam_161.tf
+      verification: derived_from_manual_draft
+    cam_162:
+      parent: id_0
+      child: cam_162_lidar_frame
+      tf: [0.16278231688104686, -0.9761269568345051, -0.14379875330422076, 1.2216564763844757, 0.9003165423959409, 0.08732673685328848, 0.4263849956539, -2.954753410973245, -0.4036484123579061, -0.19887233385155967, 0.8930384952673526, 2.7521286965955234, 0.0, 0.0, 0.0, 1.0]
+      source: inverse(global.anchor.id_0.tf) @ global.cameras.cam_162.tf
+      verification: derived_from_manual_draft
+    cam_163:
+      parent: id_0
+      child: cam_163_lidar_frame
+      tf: null
+      source: inverse(global.anchor.id_0.tf) @ global.cameras.cam_163.tf
+      verification: unavailable
+    cam_164:
+      parent: id_0
+      child: cam_164_lidar_frame
+      tf: null
+      source: inverse(global.anchor.id_0.tf) @ global.cameras.cam_164.tf
+      verification: unavailable
+    cam_165:
+      parent: id_0
+      child: cam_165_lidar_frame
+      tf: null
+      source: inverse(global.anchor.id_0.tf) @ global.cameras.cam_165.tf
+      verification: unavailable
+reference:
+  frame: stag_marker
+  marker_id: 0
+  tf: [0.35721705615077426, 0.9209002111046519, -0.15600889712571747, -1.2362375259399414, -0.9227334413878298, 0.3220530869337433, -0.2117659211039863, 4.271632671356201, -0.1447721345409659, 0.21960102546175625, 0.9647882766061153, 0.5750811100006104, 0.0, 0.0, 0.0, 1.0]
+  source: Recorded tag_0 identity and preserved saved manual map placement
+reference_provenance:
+  bag: ~/Desktop/ROSBAG/2026-09-30_16-26-42_229112800
+  topic: /tf_static
+  metadata_sha256: e8bece432fecce56909e5f76f60b44072a1807fafd83816aee1d276a9593bf7b
+  reference_frame: stag_marker
+  reference_marker_id: 0
+  observations: [{bag_stamp_ns: 1790753203313537854, header_stamp_ns: 1790730837025892284, parent: stag_marker, child: tag_0_frame, xyz_m: [0.0, 0.0, 0.0], quaternion_xyzw: [0.0, 0.0, 0.0, 1.0]}, {bag_stamp_ns: 1790753203313537854, header_stamp_ns: 1790730837026040929, parent: stag_marker, child: tag_7_frame, xyz_m: [-0.4071802124319121, 0.10674672701938048, -0.22050609071682103], quaternion_xyzw: [-1.826551572076578e-18, -6.3874471637777804e-18, 0.9997237961430884, 0.02350173238832778]}, {bag_stamp_ns: 1790753203313698359, header_stamp_ns: 1790730860600107088, parent: stag_marker, child: tag_0_frame, xyz_m: [0.0, 0.0, 0.0], quaternion_xyzw: [0.0, 0.0, 0.0, 1.0]}, {bag_stamp_ns: 1790753203313698359, header_stamp_ns: 1790730860600250167, parent: stag_marker, child: tag_7_frame, xyz_m: [-0.4071802124319124, 0.10674672701938093, -0.2205060907168208], quaternion_xyzw: [7.746870513522116e-18, -2.275006973079673e-18, 0.9997237961430885, 0.023501732388327784]}]
+  T_reference_marker_7: [[-0.998895337149495, -0.04699048223839605, -3.9523262907504236e-18, -0.4071802124319121], [0.04699048223839605, -0.998895337149495, -1.2685511599989809e-17, 0.10674672701938048], [-3.3518619951996685e-18, -1.28572201049515e-17, 1.0000000000000002, -0.22050609071682103], [0.0, 0.0, 0.0, 1.0]]
+  marker_7_samples: 2
+  max_sample_matrix_difference: 4.440892098500626e-16
+  derivation: T_map_id_0 = original manual T_map_stag; T_map_id_7 = T_map_stag @ T_stag_tag_7
+  verification: Recorded relative marker transform; preserved manual map placement is not physically rechecked
