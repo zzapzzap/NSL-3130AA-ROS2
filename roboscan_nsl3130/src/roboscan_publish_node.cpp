@@ -639,8 +639,17 @@ void roboscanPublisher::tryLoadCalibParams()
     const std::string dir = env_calib
         ? std::string(env_calib) + "/"
         : std::filesystem::current_path().string() + "/calib_output/";
-    const std::string intr = dir + viewerParam.camera_id + "/intrinsic.yml";
-    const std::string extr = dir + viewerParam.camera_id + "/extrinsic.yml";
+    const char* env_profile = std::getenv("NSL_PROFILE_DIR");
+    const std::filesystem::path profile = (env_profile && env_profile[0] != '\0')
+        ? std::filesystem::path(env_profile)
+        : std::filesystem::path(dir) / viewerParam.camera_id;
+    const auto profile_file = [&](const char* name) {
+        const auto configured = profile / name;
+        return (std::filesystem::exists(configured) ? configured
+            : std::filesystem::path(dir) / viewerParam.camera_id / name).string();
+    };
+    const std::string intr = profile_file("intrinsic.yml");
+    const std::string extr = profile_file("extrinsic.yml");
 
     if (!std::filesystem::exists(intr) || !std::filesystem::exists(extr)) {
         calib_.loaded = false;

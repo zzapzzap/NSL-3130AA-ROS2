@@ -6,6 +6,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import importlib.util
 
 from ament_index_python.packages import get_package_share_directory, get_package_prefix
 from launch import LaunchDescription
@@ -120,8 +121,8 @@ def generate_launch_description():
             spec.loader.exec_module(config_module)
             camera_ip = config_module.camera_field(str(octet), 'sensor_host')
             if not camera_ip:
-                raise ValueError(f'config cameras.cam_{octet}.sensor_host is not set; set the actual sensor address or camera_ip launch argument.')
-            print(f'[camera] camera_ip: {camera_ip} (global config cam_{octet})')
+                raise ValueError(f'config/cameras/cam_{octet}.yaml sensor_host is not set; set the actual sensor address or camera_ip launch argument.')
+            print(f'[camera] camera_ip: {camera_ip} (camera settings cam_{octet})')
         else:
             camera_ip = raw_ip
 
@@ -163,7 +164,7 @@ def generate_launch_description():
         os.environ['FASTRTPS_DEFAULT_PROFILES_FILE'] = profile
         print(f'[camera] FastDDS whitelist: {lan_ip}  ({profile})')
 
-    def _resolve_params_file(context, serial):
+    def _resolve_params_file(context, serial, profile_dir=''):
         """Pick the sensor-params file for the driver.
 
         Priority:
@@ -179,13 +180,17 @@ def generate_launch_description():
             print(f'[camera] sensor params: {calib_params}  [calibration profile]')
             return calib_params
 
-        if not serial:
+        if not serial and not profile_dir:
             print(f'[camera] sensor params: {general_params}  '
                   f'[general default — no camera id detected]')
             return general_params
 
-        dev_dir = os.path.join(calib_dir, serial)
+        dev_dir = profile_dir or os.path.join(calib_dir, serial)
         dev_file = os.path.join(dev_dir, 'params.yaml')
+        legacy_file = os.path.join(calib_dir, serial, 'params.yaml') if serial else ''
+        if not os.path.exists(dev_file) and legacy_file and os.path.exists(legacy_file):
+            print(f'[camera] sensor params: {legacy_file}  [existing serial tuning]')
+            return legacy_file
         if not os.path.exists(dev_file):
             try:
                 os.makedirs(dev_dir, exist_ok=True)
@@ -245,12 +250,19 @@ def generate_launch_description():
         return val in ('true', '1', 'yes')
 
     def _fleet_setup(context):
-        serial = _detect_serial()
+        detected_serial = _detect_serial()
         ip_octet = _detect_ip_octet()
         _refresh_fastdds_profile(ip_octet)
         ns = _resolve_namespace(context, ip_octet)
+        spec = importlib.util.spec_from_file_location('sirius_camera_config', os.path.join(repo_scripts, 'sirius_camera_config.py'))
+        compact = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(compact)
+        serial, profile_dir = compact.camera_runtime(ns, detected_serial, calib_dir)
+        explicit_profile = LaunchConfiguration('profile_dir').perform(context).strip()
+        if explicit_profile:
+            profile_dir = str(Path(explicit_profile).expanduser().resolve())
         camera_ip, camera_gateway = _resolve_camera_network(context, ip_octet)
-        params_file = _resolve_params_file(context, serial)
+        params_file = _resolve_params_file(context, serial, profile_dir)
 
         frame_id = f'{ns}_lidar_frame' if ns else ''
 
@@ -261,6 +273,7 @@ def generate_launch_description():
             output='screen',
             parameters=params if params else None,
             additional_env={'NSL_CALIB_DIR': calib_dir,
+                            'NSL_PROFILE_DIR': profile_dir,
                             'NSL_PARAMS_FILE': params_file,
                             'NSL_CAMERA_ID': serial,
                             'NSL_CAMERA_IP': camera_ip,
@@ -300,6 +313,8 @@ def generate_launch_description():
                    '--lidar-topic', lidar_topic]
             if serial:
                 cmd += ['--camera-id', serial]
+            if profile_dir:
+                cmd += ['--profile-dir', profile_dir]
             if ns:
                 cmd += ['--frame-prefix', ns]
             actions.append(ExecuteProcess(cmd=cmd, output='screen'))
@@ -312,6 +327,8 @@ def generate_launch_description():
             cmd = ['python3', multiview_tf_script, '--calib-dir', calib_dir]
             if serial:
                 cmd += ['--camera-id', serial]
+            if profile_dir:
+                cmd += ['--profile-dir', profile_dir]
             if ns:
                 cmd += ['--frame-prefix', ns]
             actions.append(ExecuteProcess(cmd=cmd, output='screen'))
@@ -329,6 +346,8 @@ def generate_launch_description():
                    '--image-topic',   img_topic,
                    '--wait-trigger',  'true',
                    '--trigger-topic', LaunchConfiguration('trigger_topic').perform(context)]
+            if profile_dir:
+                cmd += ['--profile-dir', profile_dir]
             extra = LaunchConfiguration('calib_args').perform(context).strip()
             if extra:
                 cmd += shlex.split(extra)
@@ -342,6 +361,8 @@ def generate_launch_description():
         if serial and _is_true(context, 'multiview_put_server'):
             put_server = os.path.join(repo_scripts, 'multiview_put_server.py')
             cmd = ['python3', put_server, '--camera-id', serial, '--calib-dir', calib_dir]
+            if profile_dir:
+                cmd += ['--profile-dir', profile_dir]
             if ns:
                 cmd += ['--namespace', ns]
             actions.append(ExecuteProcess(cmd=cmd, output='screen'))
@@ -369,6 +390,9 @@ def generate_launch_description():
             description="Per-device topic namespace. 'auto'=machine 192.168.3.x octet → "
                         "/cam_<octet>/camera/point_cloud, ... (DEFAULT); "
                         "''=none; or an explicit name."),
+        DeclareLaunchArgument(
+            'profile_dir', default_value='',
+            description='Explicit SDK profile folder; otherwise follow configured parameters or the detected serial'),
         DeclareLaunchArgument(
             'use_rviz', default_value='auto',
             description="Launch rviz2. 'auto'=follow calibration (on when calibration:=true, "
@@ -406,7 +430,7 @@ def generate_launch_description():
                         "'usb'=USB only."),
         DeclareLaunchArgument(
             'camera_ip', default_value='auto',
-            description='auto=global cameras.cam_N.sensor_host; no sensor address is inferred from the LAN octet'),
+            description='auto=config/cameras/cam_N.yaml sensor_host; no sensor address is inferred from the LAN octet'),
         DeclareLaunchArgument(
             'camera_netmask', default_value='255.255.255.0',
             description='Camera netmask on the 192.168.2.x camera link'),

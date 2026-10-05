@@ -184,8 +184,9 @@ class BundleSolver:
 
     def __init__(self, ref_id=0, w_up=2.0, depth_vote_range=0.6,
                  depth_vote_step=0.01, depth_vote_perp=0.25, depth_vote_half=0.05,
-                 fit_z_up=True, max_z_up_correction=35.0):
+                 fit_z_up=True, max_z_up_correction=35.0, allowed_anchor_ids=None):
         self.ref_id = int(ref_id)
+        self.allowed_anchor_ids = allowed_anchor_ids
         self.w_up = float(w_up)
         self.depth_vote_range = float(depth_vote_range)
         self.depth_vote_step = float(depth_vote_step)
@@ -206,9 +207,8 @@ class BundleSolver:
             return None
         if forced is not None and forced >= 0 and int(forced) in seen:
             return int(forced)
-        if self.ref_id in seen:
-            return self.ref_id
-        return min(seen, key=self._priority)
+        from sirius_camera_config import choose_anchor
+        return choose_anchor(seen, self.allowed_anchor_ids, self.ref_id)
 
     @staticmethod
     def _pose_options(tg):
@@ -483,6 +483,7 @@ def run_node(args):
             self._put_clients = {}              # service name -> PutWeight client (writeback)
             self.solver = BundleSolver(
                 ref_id=args.ref_id,
+                allowed_anchor_ids=args.allowed_anchor_ids,
                 w_up=args.w_up,
                 depth_vote_range=args.depth_vote_range,
                 depth_vote_step=args.depth_vote_step,
@@ -836,7 +837,7 @@ def main():
     ap.add_argument('--anchor-id', type=int, default=-1,
                     help='Force a tag id as the stag_marker origin. -1 = auto: prefer --ref-id if '
                          'visible, else the lowest visible id.')
-    ap.add_argument('--ref-id', type=int, default=0,
+    ap.add_argument('--ref-id', type=int, default=None,
                     help='Preferred anchor tag when --anchor-id is not forced. Default id 0.')
     ap.add_argument('--trigger-topic', default='/fleet/calibrate',
                     help='Solve a settle window after an Empty lands here. Empty string disables.')
@@ -891,6 +892,9 @@ def main():
 
     if args.selftest:
         return _selftest()
+    from sirius_camera_config import anchor_ids
+    args.allowed_anchor_ids = anchor_ids() if args.ref_id is None and args.anchor_id < 0 else None
+    args.ref_id = 0 if args.ref_id is None else args.ref_id
     return run_node(args)
 
 

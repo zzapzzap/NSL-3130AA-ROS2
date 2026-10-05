@@ -97,9 +97,10 @@ def _read_Rt(yml_path: Path):
 
 class MultiviewTfNode(Node):
 
-    def __init__(self, calib_dir: str, camera_filter: str, frame_prefix: str, reload_sec: float = 1.0):
+    def __init__(self, calib_dir: str, camera_filter: str, frame_prefix: str, reload_sec: float = 1.0, profile_dir: str = ''):
         super().__init__('multiview_tf_node')
         self.calib_dir = Path(os.path.expanduser(calib_dir))
+        self.profile_dir = Path(os.path.expanduser(profile_dir)) if profile_dir else None
         self.frame_prefix = frame_prefix.strip().strip('/')
         self.camera_filter = camera_filter
         self.bc = StaticTransformBroadcaster(self)
@@ -112,6 +113,8 @@ class MultiviewTfNode(Node):
             self.create_timer(reload_sec, self._poll)
 
     def _device_dirs(self, camera_filter: str):
+        if self.profile_dir is not None:
+            return [self.profile_dir] if self.profile_dir.is_dir() else []
         if camera_filter:
             d = self.calib_dir / camera_filter
             return [d] if d.is_dir() else []
@@ -123,12 +126,16 @@ class MultiviewTfNode(Node):
         out = {}
         for dev in self._device_dirs(self.camera_filter):
             for name in ('multiview.yml', 'extrinsic.yml'):
-                f = dev / name
+                f = self._profile_file(dev, name)
                 try:
                     out[str(f)] = f.stat().st_mtime
                 except OSError:
                     pass
         return out
+
+    def _profile_file(self, dev, name):
+        from sirius_camera_config import profile_file
+        return profile_file(dev, self.calib_dir, self.camera_filter or dev.name, name)
 
     def _poll(self):
         cur = self._watch_mtimes()
@@ -140,8 +147,8 @@ class MultiviewTfNode(Node):
         transforms = []
         accepted, rejected = [], []
         for dev in self._device_dirs(camera_filter):
-            serial = dev.name
-            mv = dev / 'multiview.yml'
+            serial = self.camera_filter if self.profile_dir is not None and self.camera_filter else dev.name
+            mv = self._profile_file(dev, 'multiview.yml')
             if not mv.exists():
                 continue  # not a multiview-calibrated camera; silently skip
             rt = _read_Rt(mv)
@@ -161,7 +168,8 @@ class MultiviewTfNode(Node):
                 camera_frame = f'{self.frame_prefix}_camera_frame'
                 lidar_frame = f'{self.frame_prefix}_lidar_frame'
 
-            ext = _read_Rt(dev / 'extrinsic.yml') if (dev / 'extrinsic.yml').exists() else None
+            extrinsic = self._profile_file(dev, 'extrinsic.yml')
+            ext = _read_Rt(extrinsic) if extrinsic.exists() else None
             if ext is not None:
                 # extrinsic.yml stores x_cam = R_e·x_lidar + t_e (lidar pose in camera),
                 # so lidar pose in marker = (camera in marker) ∘ (lidar in camera):
@@ -251,6 +259,7 @@ def _resolve_camera_filter(args):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--calib-dir', required=True, help='calib_output directory')
+    ap.add_argument('--profile-dir', default='', help='Explicit profile folder; camera ID remains the physical serial')
     ap.add_argument('--camera-id', default='',
                     help='Anchor only this serial. Default (empty) = auto-detect the LOCAL '
                          'USB serial and anchor just that camera (fleet-local).')
@@ -267,7 +276,7 @@ def main():
     cam_filter = _resolve_camera_filter(args)
 
     rclpy.init(args=ros_args or None)
-    node = MultiviewTfNode(args.calib_dir, cam_filter, args.frame_prefix, args.reload_sec)
+    node = MultiviewTfNode(args.calib_dir, cam_filter, args.frame_prefix, args.reload_sec, args.profile_dir)
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

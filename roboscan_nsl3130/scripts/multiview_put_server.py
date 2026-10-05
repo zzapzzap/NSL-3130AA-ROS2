@@ -37,9 +37,18 @@ def sync_completed_writeback(serial, namespace, calib_dir, installed_file):
         camera = data.get('cameras', {}).get(namespace)
         if isinstance(camera, dict):
             camera['serial'] = serial
-            camera['binding_status'] = 'observed_verified_writeback'
+            if data.get('schema_version') == 2:
+                # The serial is observed by this receiver; do not infer it from the Edge IP.
+                from pathlib import Path
+                profile = Path(installed_file).expanduser().resolve().parent
+                base = config.parent.resolve()
+                camera['parameters'] = str(profile.relative_to(base)) if profile.is_relative_to(base) else str(profile)
+            else:
+                camera['binding_status'] = 'observed_verified_writeback'
     update_config(config, bind)
-    return sync_profiles(config, calib_dir, min_mtime=os.stat(installed_file).st_mtime)
+    from pathlib import Path
+    return sync_profiles(config, Path(installed_file).resolve().parent.parent,
+                         min_mtime=os.stat(installed_file).st_mtime)
 
 
 def _sha256(path):
@@ -51,12 +60,12 @@ def _sha256(path):
 
 
 class MultiviewPutServer(Node):
-    def __init__(self, serial, calib_dir, namespace):
+    def __init__(self, serial, calib_dir, namespace, profile_dir=''):
         super().__init__(f'multiview_put_server_{serial}' if serial else 'multiview_put_server')
         self.serial = serial
         self.namespace = namespace
         self.calib_dir = os.path.expanduser(calib_dir)
-        self.dev_dir = os.path.join(self.calib_dir, serial)
+        self.dev_dir = os.path.expanduser(profile_dir) if profile_dir else os.path.join(self.calib_dir, serial)
         os.makedirs(self.dev_dir, exist_ok=True)
         svc = f'/{namespace}/multiview/put' if namespace else '/multiview/put'
         self.create_service(PutWeight, svc, self._on_put)
@@ -122,11 +131,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--camera-id', required=True, help='Camera USB serial (calib_output subfolder key)')
     ap.add_argument('--calib-dir', required=True, help='calib_output directory')
+    ap.add_argument('--profile-dir', default='', help='Explicit profile folder; camera ID remains the physical serial')
     ap.add_argument('--namespace', default='', help='cam_NN — service is /<namespace>/multiview/put')
     args, ros_args = ap.parse_known_args()
 
     rclpy.init(args=ros_args or None)
-    node = MultiviewPutServer(args.camera_id, args.calib_dir, args.namespace)
+    node = MultiviewPutServer(args.camera_id, args.calib_dir, args.namespace, args.profile_dir)
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

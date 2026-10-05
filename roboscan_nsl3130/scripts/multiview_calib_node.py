@@ -267,7 +267,9 @@ class MultiviewCalibNode(Node):
         self.bridge = CvBridge() if CvBridge is not None else None
 
         self.serial = args.camera_id
-        self.dev_dir = Path(args.calib_dir) / self.serial
+        self.dev_dir = Path(args.profile_dir).expanduser() if args.profile_dir else Path(args.calib_dir) / self.serial
+        from sirius_camera_config import anchor_ids
+        self.anchor_ids = anchor_ids()
         self.out_dir = self.dev_dir / 'multiview'
         self.out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -363,7 +365,8 @@ class MultiviewCalibNode(Node):
     # ---- setup ----------------------------------------------------------------
 
     def _load_intrinsics(self):
-        yml = self.dev_dir / 'intrinsic.yml'
+        from sirius_camera_config import profile_file
+        yml = profile_file(self.dev_dir, self.a.calib_dir, self.serial, 'intrinsic.yml')
         if not yml.exists():
             self.get_logger().error(
                 f'{yml} not found. Run intrinsic_calib.launch.py for {self.serial} first.')
@@ -385,7 +388,8 @@ class MultiviewCalibNode(Node):
 
     def _load_extrinsic(self):
         """LiDAR→RGB extrinsic (x_cam = R_e·x_lidar + t_e) or None if absent."""
-        yml = self.dev_dir / 'extrinsic.yml'
+        from sirius_camera_config import profile_file
+        yml = profile_file(self.dev_dir, self.a.calib_dir, self.serial, 'extrinsic.yml')
         if not yml.exists():
             return None
         fs = cv2.FileStorage(str(yml), cv2.FILE_STORAGE_READ)
@@ -521,7 +525,10 @@ class MultiviewCalibNode(Node):
             return None
         enough = [t for t in self.tags if len(self.tags[t]['rv']) >= self.a.min_frames]
         pool = enough or list(self.tags)
-        return REF_ID if REF_ID in pool else min(pool)
+        if self.a.marker_id >= 0:
+            return self.a.marker_id if self.a.marker_id in pool else None
+        from sirius_camera_config import choose_anchor
+        return choose_anchor(pool, self.anchor_ids, REF_ID)
 
     def _ref_count(self):
         rid = self._ref_id()
@@ -931,8 +938,10 @@ class MultiviewCalibNode(Node):
         if self.a.marker_id >= 0:
             hit = np.where(ids == self.a.marker_id)[0]
             return int(hit[0]) if len(hit) else None
-        # default: the lowest id (deterministic reference choice)
-        return int(np.argmin(ids))
+        from sirius_camera_config import choose_anchor
+        selected = choose_anchor(ids.tolist(), self.anchor_ids, REF_ID)
+        hit = np.where(ids == selected)[0] if selected is not None else []
+        return int(hit[0]) if len(hit) else None
 
     def _manual_decode(self, msg: Image) -> np.ndarray:
         """Minimal decode for rgb8/bgr8/mono8 when cv_bridge is unavailable."""
@@ -1195,6 +1204,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--camera-id', required=True, help='Camera USB serial (output folder key)')
     ap.add_argument('--calib-dir', required=True, help='calib_output directory')
+    ap.add_argument('--profile-dir', default='', help='Explicit profile folder; camera ID remains the physical serial')
     ap.add_argument('--image-topic', required=True, help='RGB image topic to subscribe')
     ap.add_argument('--library-hd', type=int, default=21,
                     help='STag HD library [11,13,15,17,19,21,23]')

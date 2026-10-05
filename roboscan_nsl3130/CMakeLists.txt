@@ -131,6 +131,7 @@ install(DIRECTORY rviz
 
 install(PROGRAMS
   scripts/gen_multiview_rviz_layout.py
+  scripts/sirius_camera_config.py
   scripts/detect_camera_id.py
   scripts/intrinsic_calibration_node.py
   scripts/extrinsic_calibration_node.py
