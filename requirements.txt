@@ -2,7 +2,7 @@
 # (multiview_calib.launch.py / multiview_calib_node.py).
 #
 # Install on every machine that runs the multiview calibration:
-#     cd ~/colcon_ws/src/NSL-3130AA-ROS2
+#     cd ~/SiriusRobotDT/controller/src/NSL-3130AA-ROS2
 #     python3 -m pip install --user -r requirements.txt
 #
 stag-python>=1.1.1   # STag fiducial marker detection (REQUIRED)
