@@ -1,5 +1,6 @@
 """Exercise compact settings through real launch assembly without starting devices."""
 import importlib.util
+import json
 import os
 from pathlib import Path
 import sys
@@ -30,7 +31,7 @@ tf_module = load('camera_inventory_tf', SCRIPTS/'multiview_tf_node.py')
 
 
 class CameraInventoryRuntimeTests(unittest.TestCase):
-    def configuration(self, root, ids=(0, 7), serial='SERIAL_A'):
+    def configuration(self, root, ids=(0, 7), serial='N010005C4'):
         config = root/'config.yaml'
         config.write_text(yaml.safe_dump({'schema_version': 2,
             'cameras': {'cam_161': {'ip': '192.168.3.161', 'serial': serial,
@@ -40,7 +41,7 @@ class CameraInventoryRuntimeTests(unittest.TestCase):
         (root/'cameras/cam_161.yaml').write_text('sensor_host: 192.168.2.202\n')
         return config
 
-    def assemble(self, root, config, detected='SERIAL_A', overrides=None):
+    def assemble(self, root, config, detected='N010005C4', overrides=None):
         module = load('camera_inventory_launch', PACKAGE/'launch/camera.launch.py')
         prefix = root/'install'
         scripts = prefix/'lib/roboscan_nsl3130'
@@ -59,11 +60,20 @@ class CameraInventoryRuntimeTests(unittest.TestCase):
             if argv[0] == 'ip':
                 return 'inet 192.168.3.161/24\n'
             return detected
+        real_run = module.subprocess.run
+        def fake_run(argv, **kwargs):
+            if Path(argv[0]).name == 'camera_identity':
+                record = {'serial': detected, 'chip_id': int(detected[1:5],16),
+                          'wafer_id': int(detected[5:9],16), 'source': 'ethernet_sdk_ids',
+                          'sensor_host': argv[1]}
+                return SimpleNamespace(returncode=0,stdout=json.dumps(record)+'\n',stderr='')
+            return real_run(argv,**kwargs)
         with patch.dict(os.environ, {'SIRIUS_CONFIG': str(config), 'SIRIUS_ROBOT_DT_ROOT': str(ROOT),
                                      'NSL_CALIB_DIR': str(root/'calibration'), 'HOME': str(root)}), \
              patch.object(module, 'get_package_share_directory', return_value=str(PACKAGE)), \
              patch.object(module, 'get_package_prefix', return_value=str(prefix)), \
              patch.object(module.subprocess, 'check_output', side_effect=fake_output), \
+             patch.object(module.subprocess, 'run', side_effect=fake_run), \
              patch.object(module, 'DeclareLaunchArgument', side_effect=declare), \
              patch.object(module, 'LaunchDescription', side_effect=lambda entities: entities), \
              patch.object(module, 'LaunchConfiguration', Configuration), \
@@ -84,7 +94,7 @@ class CameraInventoryRuntimeTests(unittest.TestCase):
             (profile/'params.yaml').write_text('tuning: custom\n')
             actions = self.assemble(root, config)
             driver = actions[0]['node']['additional_env']
-            self.assertEqual(driver['NSL_CAMERA_ID'], 'SERIAL_A')
+            self.assertEqual(driver['NSL_CAMERA_ID'], 'N010005C4')
             self.assertEqual(driver['NSL_PROFILE_DIR'], str(profile))
             self.assertEqual(driver['NSL_PARAMS_FILE'], str(profile/'params.yaml'))
             self.assertEqual(driver['NSL_CAMERA_IP'], '192.168.2.202')
@@ -95,7 +105,7 @@ class CameraInventoryRuntimeTests(unittest.TestCase):
                 if command[1].endswith('camera_device_info_node.py'):
                     continue
                 self.assertEqual(command[command.index('--profile-dir') + 1], str(profile))
-                self.assertEqual(command[command.index('--camera-id') + 1], 'SERIAL_A')
+                self.assertEqual(command[command.index('--camera-id') + 1], 'N010005C4')
 
     def test_partial_download_retains_serial_tuning_intrinsic_and_extrinsic(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -104,7 +114,7 @@ class CameraInventoryRuntimeTests(unittest.TestCase):
             profile = root/'profiles/custom'
             profile.mkdir(parents=True)
             (profile/'multiview.yml').write_text('updated: multiview\n')
-            legacy = root/'calibration/SERIAL_A'
+            legacy = root/'calibration/N010005C4'
             legacy.mkdir(parents=True)
             for name in ('params.yaml', 'intrinsic.yml', 'extrinsic.yml'):
                 (legacy/name).write_text('existing: preserved\n')
@@ -112,10 +122,10 @@ class CameraInventoryRuntimeTests(unittest.TestCase):
             env = actions[0]['node']['additional_env']
             self.assertEqual(env['NSL_PROFILE_DIR'], str(profile))
             self.assertEqual(env['NSL_PARAMS_FILE'], str(legacy/'params.yaml'))
-            self.assertEqual(compact.profile_file(profile, legacy.parent, 'SERIAL_A', 'intrinsic.yml'), legacy/'intrinsic.yml')
-            self.assertEqual(compact.profile_file(profile, legacy.parent, 'SERIAL_A', 'extrinsic.yml'), legacy/'extrinsic.yml')
+            self.assertEqual(compact.profile_file(profile, legacy.parent, 'N010005C4', 'intrinsic.yml'), legacy/'intrinsic.yml')
+            self.assertEqual(compact.profile_file(profile, legacy.parent, 'N010005C4', 'extrinsic.yml'), legacy/'extrinsic.yml')
             node = tf_module.MultiviewTfNode.__new__(tf_module.MultiviewTfNode)
-            node.profile_dir, node.calib_dir, node.camera_filter = profile, legacy.parent, 'SERIAL_A'
+            node.profile_dir, node.calib_dir, node.camera_filter = profile, legacy.parent, 'N010005C4'
             self.assertEqual(node._profile_file(profile, 'multiview.yml'), profile/'multiview.yml')
             self.assertEqual(node._profile_file(profile, 'extrinsic.yml'), legacy/'extrinsic.yml')
             self.assertIn(str(legacy/'extrinsic.yml'), node._watch_mtimes())
@@ -127,9 +137,9 @@ class CameraInventoryRuntimeTests(unittest.TestCase):
             profile = root/'profiles/custom'
             profile.mkdir(parents=True)
             (profile/'observed.yaml').write_text('intrinsic_rgb: null\n')
-            serial, selected = compact.camera_runtime('cam_161', 'SERIAL_A', root/'calibration', config)
-            self.assertEqual(serial, 'SERIAL_A')
-            self.assertEqual(selected, str(root/'calibration/SERIAL_A'))
+            serial, selected = compact.camera_runtime('cam_161', 'N010005C4', root/'calibration', config)
+            self.assertEqual(serial, 'N010005C4')
+            self.assertEqual(selected, str(root/'calibration/N010005C4'))
 
     def test_replaced_physical_serial_uses_new_profile_and_discovery_can_start(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -138,12 +148,12 @@ class CameraInventoryRuntimeTests(unittest.TestCase):
             old = root/'profiles/custom'
             old.mkdir(parents=True)
             (old/'params.yaml').write_text('old_camera: true\n')
-            replacement = root/'calibration/OTHER_SERIAL'
+            replacement = root/'calibration/N00C705C3'
             replacement.mkdir(parents=True)
             (replacement/'params.yaml').write_text('new_camera: true\n')
-            actions = self.assemble(root, config, detected='OTHER_SERIAL')
+            actions = self.assemble(root, config, detected='N00C705C3')
             env = actions[0]['node']['additional_env']
-            self.assertEqual(env['NSL_CAMERA_ID'], 'OTHER_SERIAL')
+            self.assertEqual(env['NSL_CAMERA_ID'], 'N00C705C3')
             self.assertEqual(env['NSL_PARAMS_FILE'], str(replacement/'params.yaml'))
             self.assertTrue(any('camera_device_info_node.py' in str(action) for action in actions))
 
@@ -162,8 +172,8 @@ class CameraInventoryRuntimeTests(unittest.TestCase):
             root = Path(directory)
             config = self.configuration(root)
             serial, profile = compact.camera_runtime('cam_161', '', root/'calibration', config)
-            self.assertEqual(serial, 'SERIAL_A')
-            self.assertEqual(profile, str(root/'calibration/SERIAL_A'))
+            self.assertEqual(serial, 'N010005C4')
+            self.assertEqual(profile, str(root/'calibration/N010005C4'))
 
     def test_anchor_config_reaches_edge_and_host_origin_choices(self):
         observations = [{'tags': {0: {}, 7: {}, 3: {}, 9: {}}}]
@@ -186,14 +196,29 @@ class CameraInventoryRuntimeTests(unittest.TestCase):
             edge.a.marker_id = 0
             self.assertEqual(edge._ref_id(), 0)
 
+    def test_calibration_accepts_ids_zero_through_nine_independently_of_saved_map(self):
+        allowed = compact.calibration_marker_ids()
+        self.assertEqual(allowed, list(range(10)))
+        edge = calib.MultiviewCalibNode.__new__(calib.MultiviewCalibNode)
+        edge.anchor_ids = allowed
+        edge.a = SimpleNamespace(marker_id=-1, min_frames=5)
+        for marker in range(10):
+            edge.tags = {marker: {'rv': [1] * 10}}
+            self.assertEqual(edge._ref_id(), marker)
+            host = solver.BundleSolver(allowed_anchor_ids=allowed)
+            self.assertEqual(host._anchor_id([{'tags': {marker: {}}}], -1), marker)
+            self.assertEqual(calib._size_of(marker), 0.32 if marker == 7 else 0.19)
+        edge.tags = {13: {'rv': [1] * 10}}
+        self.assertIsNone(edge._ref_id())
+
     def test_standalone_helper_does_not_import_sirius_config(self):
         with tempfile.TemporaryDirectory() as directory:
             config = Path(directory)/'legacy.yaml'
             config.write_text('schema_version: 1\n')
             with patch.dict(sys.modules, {'sirius_config': None}):
-                serial, profile = compact.camera_runtime('cam_161', 'SERIAL_A', config.parent, config)
-            self.assertEqual(serial, 'SERIAL_A')
-            self.assertEqual(profile, str(config.parent/'SERIAL_A'))
+                serial, profile = compact.camera_runtime('cam_161', 'N010005C4', config.parent, config)
+            self.assertEqual(serial, 'N010005C4')
+            self.assertEqual(profile, str(config.parent/'N010005C4'))
 
 
 if __name__ == '__main__':

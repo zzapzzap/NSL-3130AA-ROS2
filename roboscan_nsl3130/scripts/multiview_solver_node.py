@@ -892,8 +892,8 @@ def main():
 
     if args.selftest:
         return _selftest()
-    from sirius_camera_config import anchor_ids
-    args.allowed_anchor_ids = anchor_ids() if args.ref_id is None and args.anchor_id < 0 else None
+    from sirius_camera_config import calibration_marker_ids
+    args.allowed_anchor_ids = calibration_marker_ids() if args.ref_id is None and args.anchor_id < 0 else None
     args.ref_id = 0 if args.ref_id is None else args.ref_id
     return run_node(args)
 

@@ -1,3 +1,4 @@
 [submodule "nsl_sdk"]
 	path = roboscan_nsl3130/nsl_lib
 	url = https://github.com/zzapzzap/nsl3140-Library.git
+	branch = siriusrobotdt-integration

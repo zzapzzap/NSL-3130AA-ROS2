@@ -69,6 +69,12 @@ ${NSL_LIB_INCLUDE_DIR})
 # Build
 add_executable(roboscan_publish_node src/roboscan_publish_node.cpp)
 
+add_executable(camera_identity nsl_lib/script/camera_identity.cpp)
+target_compile_features(camera_identity PUBLIC cxx_std_17)
+target_include_directories(camera_identity PUBLIC ${NSL_LIB_INCLUDE_DIR})
+target_link_libraries(camera_identity ${NSL_LIB_PATH})
+set_target_properties(camera_identity PROPERTIES BUILD_RPATH "${NSL_LIB_DIR}" INSTALL_RPATH "${NSL_LIB_DIR}")
+
 add_executable(change_camera_ip nsl_lib/script/change_camera_ip.cpp)
 target_compile_features(change_camera_ip PUBLIC cxx_std_17)
 target_include_directories(change_camera_ip PUBLIC ${NSL_LIB_INCLUDE_DIR})
@@ -114,7 +120,7 @@ set_target_properties(roboscan_publish_node PROPERTIES
   INSTALL_RPATH "${NSL_LIB_DIR}"
 )
 
-install(TARGETS roboscan_publish_node change_camera_ip
+install(TARGETS roboscan_publish_node change_camera_ip camera_identity
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY launch

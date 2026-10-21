@@ -268,8 +268,8 @@ class MultiviewCalibNode(Node):
 
         self.serial = args.camera_id
         self.dev_dir = Path(args.profile_dir).expanduser() if args.profile_dir else Path(args.calib_dir) / self.serial
-        from sirius_camera_config import anchor_ids
-        self.anchor_ids = anchor_ids()
+        from sirius_camera_config import calibration_marker_ids
+        self.anchor_ids = calibration_marker_ids()
         self.out_dir = self.dev_dir / 'multiview'
         self.out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -304,6 +304,7 @@ class MultiviewCalibNode(Node):
         self.tags = {}
         self.saved = False
         self.frame_count = 0
+        self._last_collection_report = 0.0
         self._collect_start = None   # monotonic time the reference tag was first seen (duration mode)
         self._last_save_time = None  # monotonic time of the last save (fleet trigger cooldown)
 
@@ -441,6 +442,7 @@ class MultiviewCalibNode(Node):
     def _rearm(self, idle: bool):
         """Reset collection state. idle=True → back to waiting for the next trigger."""
         self.tags.clear()
+        self._last_collection_report = 0.0
         self._clouds.clear()
         self._collect_start = None
         self.saved = False
@@ -474,6 +476,8 @@ class MultiviewCalibNode(Node):
             stag.drawDetectedMarkers(dbg, corners, ids)
             for i, mid in enumerate(np.asarray(ids).reshape(-1)):
                 mid = int(mid)
+                if mid not in self.anchor_ids:
+                    continue
                 size = _size_of(mid)
                 cpx = np.asarray(corners[i], np.float64).reshape(4, 2)
                 res = self._pose(cpx, _object_points(size))
@@ -492,6 +496,7 @@ class MultiviewCalibNode(Node):
                 cv2.drawFrameAxes(dbg, self.K, None, rvec, tvec, size * 0.5, 3)
             self._annotate(dbg)
 
+        self._log_collection_progress([] if ids is None else np.asarray(ids).reshape(-1).tolist())
         self._hud(dbg)
 
         if self.a.display:
@@ -514,6 +519,26 @@ class MultiviewCalibNode(Node):
                              f'(median of {self._ref_count()} reference views)')
         elif self._ref_count() >= self.a.num_frames:
             self._finish('collected enough views (headless auto)')
+
+    def _log_collection_progress(self, detected):
+        now = time.monotonic()
+        if now - self._last_collection_report < 2.0:
+            return
+        self._last_collection_report = now
+        rid = self._ref_id()
+        allowed = self.anchor_ids
+        count = self._ref_count()
+        reason = ''
+        if rid is None:
+            if not detected:
+                reason = '; no STag detected in the current frame'
+            elif allowed is not None and not set(detected).intersection(allowed):
+                reason = '; no configured anchor in view'
+            else:
+                reason = '; no accepted reference pose (check pose/reprojection quality)'
+        self.get_logger().info(
+            f'[collect] detected IDs={sorted(detected)}; allowed anchors={allowed if allowed is not None else "any"}; '
+            f'reference={rid if rid is not None else "none"}; views={count}/{self.a.num_frames}{reason}')
 
     def _ref_id(self):
         """Reference tag id by MAIN-TAG PRIORITY (id 7 → 0 → 1 → …): the big reference tag (7) if

@@ -6,11 +6,11 @@
 # mdt bag [directory] replays offline in domain 42; mloc opens the saved TF editor.
 # mrb records RGB/clouds/robot poses/TF; mba inspects a recording.
 # Native module tools: mvw (cloud viewer), mvp (pose fusion), mtf (STag calibration),
-# mcalpull (raw profile fetch), mtr (existing-weight pose preparation).
+# mcalpull (raw profile fetch), mtr (new marker-relative training).
 # Explicit administration: msb restarts camera units; mcb shares/builds the project.
 # SSH keys are preferred; mixed accounts and optional password fallback belong in
 # ~/.edges.conf. Mirroring preserves calib_output/, weight/, and dataset/.
-# Targets are online Edges 161..165, excluding this host; NSL_EDGES can select a subset.
+# Targets are online Edges 161..164, excluding this host; NSL_EDGES can select a subset.
 
 # If NSL_FLEET_USER is empty, ssh uses ~/.ssh/config or the local username.
 # Set NSL_FLEET_USER=sb only when every edge uses the same account.
@@ -21,7 +21,7 @@ NSL_FLEET_CONFIG_LEGACY="${NSL_FLEET_CONFIG_LEGACY:-$HOME/.nsl_fleet/edges.conf}
 NSL_LOCAL_WS="${NSL_LOCAL_WS:-${SIRIUS_ROBOT_DT_ROOT}/controller}"
 NSL_REMOTE_PROJECT="${NSL_REMOTE_PROJECT:-~/SiriusRobotDT}"
 NSL_EDGE_LO="${NSL_EDGE_LO:-161}"
-NSL_EDGE_HI="${NSL_EDGE_HI:-165}"
+NSL_EDGE_HI="${NSL_EDGE_HI:-164}"
 # Never mirrored by mgp (per-edge state, huge binaries, or distributed elsewhere):
 NSL_MIRROR_EXCLUDES=(--exclude='.git' --exclude='.claude/' --exclude='__pycache__/' --exclude='*.pyc'
                      --exclude='calib_output/' --exclude='weight/' --exclude='dataset/'
@@ -331,7 +331,7 @@ PY
     done
 }
 
-# Existing-weight single/multi pose detection; training remains a separate module entry.
+# New single/multi-view training using the saved second alignment.
 mtr() {
     (($# == 0)) || { echo 'Usage: mtr'; return 2; }
     _nsl_workflow pose
@@ -391,13 +391,38 @@ mtf() {
             failed=true
             continue
         fi
-        if ! out="$(NSL_SSH_COMMAND_TIMEOUT=12 _nsl_sudo "$o" "journalctl -u nsl-edge-agent@${u}.service --since '${log_since}' --no-pager 2>/dev/null")"; then
+        local deadline=$((SECONDS + ${NSL_CALIB_WRITEBACK_WAIT_SEC:-30})) journal_ok=true
+        while :; do
+            if ! out="$(NSL_SSH_COMMAND_TIMEOUT=12 _nsl_sudo "$o" "journalctl -u nsl-edge-agent@${u}.service --since '${log_since}' --no-pager 2>/dev/null")"; then
+                journal_ok=false
+                break
+            fi
+            if printf '%s\n' "$out" | grep -qi '\[observe\] published' && \
+                    printf '%s\n' "$out" | grep -qF '[multiview_put] complete, verified, installed'; then
+                break
+            fi
+            (( SECONDS < deadline )) || break
+            sleep 1
+        done
+        if [[ "$journal_ok" != true ]]; then
             echo "  edge $o: JOURNAL-FAIL (${u})"
             failed=true
             continue
         fi
         observe="$(printf '%s\n' "$out" | grep -i '\[observe\] published' | tail -1 || true)"
         if [[ -n "$observe" ]]; then
+            if ! printf '%s\n' "$out" | grep -qF '[multiview_put] complete, verified, installed'; then
+                echo "  edge $o: observations received, but completed solver writeback was not confirmed"
+                failed=true
+                continue
+            fi
+            # Pull the verified persisted result now instead of racing the main
+            # controller's periodic profile import before mark-mtf checks freshness.
+            if ! mcalpull "$o"; then
+                echo "  edge $o: persisted calibration import failed"
+                failed=true
+                continue
+            fi
             printf '  edge %s: %s\n' "$o" "$(
                 printf '%s\n' "$observe" \
                     | sed -E 's/.*\[observe\] published ([0-9]+) tag obs on ([^ ]+) \(ref id ([0-9]+)\).*/OK: \1 tags -> \2 (ref id \3)/'
@@ -415,7 +440,13 @@ mtf() {
             continue
         fi
         if printf '%s\n' "$out" | grep -qi 'trigger received'; then
-            echo "  edge $o: TRIGGERED, but no tag observation yet"
+            local progress
+            progress="$(printf '%s\n' "$out" | grep -F '[collect]' | tail -1 || true)"
+            if [[ -n "$progress" ]]; then
+                printf '  edge %s: TRIGGERED; %s\n' "$o" "${progress#*\[collect\] }"
+            else
+                echo "  edge $o: TRIGGERED, but no tag observation yet"
+            fi
         else
             echo "  edge $o: NO-TRIGGER"
         fi
@@ -439,7 +470,7 @@ mrb() {
     local transport="${NSL_ROSBAG_RGB_TRANSPORT:-compressed}" suffix='' output
     if [[ "${1:-}" == -h || "${1:-}" == --help ]]; then
         echo 'Usage: mrb [extra ros2 bag record options/topics]'
-        echo 'One HOST bag: camera 161..165 JPEG RGB + RGB PointCloud + loading/unloading pose + TF. Stop/save: Ctrl+C.'
+        echo 'One HOST bag: camera 161..164 JPEG RGB + RGB PointCloud + loading/unloading pose + TF. Stop/save: Ctrl+C.'
         echo 'Optional raw Image input: NSL_ROSBAG_RGB_TRANSPORT=raw mrb'
         return 0
     fi
@@ -451,7 +482,7 @@ mrb() {
     mkdir -p "$HOME/Desktop/ROSBAG" || return
     echo "[mrb] HOST -> $output (RGB: $transport; Ctrl+C to stop/save)"
     local camera topics=()
-    for camera in ${NSL_ROSBAG_CAMERAS:-161 162 163 164 165}; do
+    for camera in ${NSL_ROSBAG_CAMERAS:-161 162 163 164}; do
         [[ "$camera" =~ ^[0-9]+$ ]] || { echo '[mrb] NSL_ROSBAG_CAMERAS needs numeric camera IDs.' >&2; return 2; }
         topics+=("/cam_${camera}/camera/rgb/image_raw${suffix}" "/cam_${camera}/camera/point_cloud_rgb")
     done
@@ -461,7 +492,7 @@ mrb() {
 
 # Managed camera/pose viewers reuse the existing module nodes.
 mvw() { (($# == 0)) || { echo 'Usage: mvw'; return 2; }; _nsl_workflow view camera; }
-mvp() { (($# == 0)) || { echo 'Usage: mvp'; return 2; }; _nsl_workflow view camera_pose; }
+mvp() { (($# == 0)) || { echo 'Usage: mvp'; return 2; }; _nsl_workflow view map_pose; }
 mtd() {
     case "${1:-}" in
         '') _nsl_workflow mtd ;;
@@ -479,17 +510,21 @@ mtd() {
 mdt() {
     local mode='live' arg bag_argument
     case "${1:-}" in
+        ''|auto_mode:=true|auto_mode:=false|save|restore) mtd "$@"; return ;;
         -h|--help|help)
             cat <<'HELP'
-Usage: mdt | mdt bag [bag_directory]
-  mdt                     # camera + pose + robots using saved mtd
+Usage: mdt [save|restore] | mdt live | mdt bag [bag_directory]
+  mdt                     # second alignment editor; save cameras, STag and robot bases
+  mdt save                # save the open editor
+  mdt live                # view the saved global placement
   sensors stop
   mdt bag                 # saved 90-second recording
   mdt bag /path/to/bag
   mloc                    # edit and save the stored TF
   sensors start
 Live sensors and offline replay use domain 42. Replay sets local discovery automatically.
-Live MDT uses saved mtd; close mvw before viewing. Unsafe/unprepared human poses stay disabled.
+mtf -> mtr trains and shows measured camera/marker geometry independently of MDT.
+mdt + save sets independent map placements; mvp publishes poses on the saved marker placement.
 HELP
             return 0
             ;;

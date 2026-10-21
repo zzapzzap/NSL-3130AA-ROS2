@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Report actual NSL USB identity and serve its existing raw calibration files."""
+"""Report actual NSL USB or Ethernet SDK identity and serve its existing raw calibration files."""
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 
@@ -13,13 +14,13 @@ from std_msgs.msg import String
 from std_srvs.srv import Trigger
 from ros_humanpose.srv import GetWeight
 
-from detect_camera_id import detect_camera_serials
+from detect_camera_id import detect_camera_serials, validate_ethernet_identity
 from sirius_camera_config import camera_runtime, inventory, camera_cache, profile_file, SDK_FILES
 
 PROFILE_FILES = SDK_FILES + ('observed.yaml',)
 
 
-def describe_device(namespace, calibration_root, config_path=None, usb_sys=Path('/sys/bus/usb/devices')):
+def describe_device(namespace, calibration_root, config_path=None, usb_sys=Path('/sys/bus/usb/devices'), ethernet_identity=None):
     serials = detect_camera_serials(usb_sys)
     data, path = inventory(config_path)
     cache = camera_cache(data, path, namespace)
@@ -27,12 +28,23 @@ def describe_device(namespace, calibration_root, config_path=None, usb_sys=Path(
     report = {'camera': namespace, 'serial': None, 'source': 'unavailable', 'verified': False,
               'profile_dir': None, 'files': {}, 'cached_serial': cached,
               'profile_get_service': f'/{namespace}/camera/profile/get'}
-    if len(serials) != 1:
+    if ethernet_identity:
+        try:
+            serial = validate_ethernet_identity(ethernet_identity, cache.get('sensor_host'))
+        except ValueError as error:
+            report['reason'] = str(error)
+            return report
+        source = 'ethernet_sdk_ids'
+        report.update(chip_id=ethernet_identity['chip_id'], wafer_id=ethernet_identity['wafer_id'],
+                      sensor_host=ethernet_identity['sensor_host'])
+    elif len(serials) == 1:
+        serial, source = serials[0], 'usb_sysfs'
+    else:
         report['reason'] = ('Multiple NSL USB serials are present; physical binding is ambiguous'
-                            if serials else 'NSL USB serial is unavailable; this SDK exposes no Ethernet manufacturer-serial getter')
+                            if serials else 'No live USB or Ethernet SDK identity observation is available')
         return report
-    serial, profile = camera_runtime(namespace, serials[0], calibration_root, config_path)
-    report.update(serial=serial, source='usb_sysfs', verified=True, profile_dir=profile)
+    serial, profile = camera_runtime(namespace, serial, calibration_root, config_path)
+    report.update(serial=serial, source=source, verified=True, profile_dir=profile)
     for name in PROFILE_FILES:
         file = profile_file(profile, calibration_root, serial, name, raw=True)
         if file.is_file():
@@ -49,6 +61,8 @@ class CameraDeviceInfoNode(Node):
         super().__init__(f'{namespace}_camera_device_info')
         self.namespace = namespace
         self.calibration_root = calibration_root
+        # This snapshot is passed only to this driver launch, never loaded from an old cache.
+        self.ethernet_identity = json.loads(os.environ.get('NSL_CAMERA_ETHERNET_IDENTITY', '{}'))
         qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
                          reliability=ReliabilityPolicy.RELIABLE)
         self.identity = self.create_publisher(String, f'/{namespace}/camera_id', qos)
@@ -59,7 +73,7 @@ class CameraDeviceInfoNode(Node):
         self._publish_identity()
 
     def _report(self):
-        return describe_device(self.namespace, self.calibration_root)
+        return describe_device(self.namespace, self.calibration_root, ethernet_identity=self.ethernet_identity)
 
     def _publish_identity(self):
         report = self._report()

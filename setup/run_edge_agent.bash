@@ -103,6 +103,23 @@ singleview_weight_dir() {
 }
 
 singleview_weight_path() {
+    if [[ -n "${NSL_POSE_CONFIG:-}" ]]; then
+        python3 - "$SIRIUS_ROBOT_DT_ROOT" "$NSL_POSE_CONFIG" "$(detect_edge_octet)" <<'PY'
+import os
+from pathlib import Path
+import sys
+import yaml
+root, pointer, octet = sys.argv[1:]
+path = Path(pointer) if Path(pointer).is_absolute() else Path(root)/pointer
+config = yaml.safe_load(path.read_text())
+value = str(config.get('training', {}).get('weightpath') or os.environ.get('ROS_HUMANPOSE_WEIGHT_LOCAL_DIR')
+            or str(Path(root)/'controller/src/ros_humanpose/weight'))
+value = value.replace('${SIRIUS_ROBOT_DT_ROOT}', root).replace('$SIRIUS_ROBOT_DT_ROOT', root)
+folder = Path(os.path.expandvars(value)).expanduser()
+print(folder if folder.suffix == '.pkl' else folder/f'3d_pose_cam{octet}.pkl')
+PY
+        return
+    fi
     local file local_dir
     file="$(singleview_weight_name)" || return 1
     local_dir="$(singleview_weight_dir)"
@@ -110,6 +127,11 @@ singleview_weight_path() {
 }
 
 fetch_singleview_weight() {
+    # A prepared run ships an immutable, verified model alongside its config.
+    # Pulling a legacy basename from the server must not replace that model.
+    if [[ -n "${NSL_POSE_CONFIG:-}" && "$(singleview_weight_path)" != "$(singleview_weight_dir)/$(singleview_weight_name)" ]]; then
+        return 0
+    fi
     [[ "${ROS_HUMANPOSE_SYNC_WEIGHTS_ON_START:-1}" =~ ^(1|true|yes)$ ]] || return 1
     local file local_dir tmp
     file="$(singleview_weight_name)" || return 1

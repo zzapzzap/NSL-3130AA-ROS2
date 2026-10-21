@@ -22,6 +22,51 @@ class FleetWorkflowTests(unittest.TestCase):
         calls=(temporary/'calls').read_text().splitlines() if (temporary/'calls').is_file() else []
         return result,calls
 
+    def test_mtf_waits_for_writeback_then_imports_before_marking_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            ros2=root/'ros2'
+            ros2.write_text('#!/bin/sh\nexit 0\n')
+            ros2.chmod(0o755)
+            result,calls=self.shell(directory, r'''_nsl_edges() { echo 161; }
+_nsl_login_user() { echo testedge; }
+_nsl_workflow() { printf '%s\n' "$1" >> "$TEST_COMMANDS"; }
+_nsl_sudo() {
+ local count=0
+ [[ ! -f "$TEST_COMMANDS.count" ]] || count="$(cat "$TEST_COMMANDS.count")"
+ count=$((count+1)); echo "$count" > "$TEST_COMMANDS.count"
+ echo '[observe] published 1 tag obs on /cam_161/tag_observations (ref id 3).'
+ (( count < 2 )) || echo '[multiview_put] complete, verified, installed -> result'
+}
+mcalpull() { echo import >> "$TEST_COMMANDS"; }
+python3() { return 0; }
+sleep() { :; }
+mtf
+''',{'PATH':directory+os.pathsep+os.environ['PATH'], 'NSL_CALIB_WAIT_SEC':'0',
+     'NSL_CALIB_WRITEBACK_WAIT_SEC':'3'})
+            self.assertEqual(result.returncode,0,result.stderr+result.stdout)
+            self.assertEqual((root/'calls.count').read_text().strip(),'2')
+            self.assertEqual(calls,['require','import','mark-mtf'])
+
+    def test_mtf_does_not_accept_observations_without_verified_writeback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ros2=Path(directory)/'ros2'
+            ros2.write_text('#!/bin/sh\nexit 0\n')
+            ros2.chmod(0o755)
+            result,calls=self.shell(directory,r'''_nsl_edges() { echo 161; }
+_nsl_login_user() { echo testedge; }
+_nsl_workflow() { printf '%s\n' "$1" >> "$TEST_COMMANDS"; }
+_nsl_sudo() { echo '[observe] published 1 tag obs on /cam_161/tag_observations (ref id 3).'; }
+mcalpull() { echo unexpected-import >> "$TEST_COMMANDS"; }
+python3() { return 0; }
+sleep() { :; }
+mtf
+''',{'PATH':directory+os.pathsep+os.environ['PATH'], 'NSL_CALIB_WAIT_SEC':'0',
+     'NSL_CALIB_WRITEBACK_WAIT_SEC':'0'})
+            self.assertEqual(result.returncode,1,result.stderr+result.stdout)
+            self.assertEqual(calls,['require'])
+            self.assertIn('completed solver writeback was not confirmed',result.stdout)
+
     def test_msb_restarts_only_camera_agent_without_clock_or_training_listener(self):
         with tempfile.TemporaryDirectory() as directory:
             result,calls=self.shell(directory,'''_nsl_edges() { echo 161; }

@@ -7,8 +7,8 @@ cameras:
     ip: 192.168.3.161
     serial: null
     parameters: ../calib_output/runtime/cam_161
-    sensor_host: 192.168.2.202
-    sensor_source_address: 192.168.2.102
+    sensor_host: 192.168.2.201
+    sensor_source_address: 192.168.2.101
     lidar_frame: cam_161_lidar_frame
     rgb_frame: cam_161_camera_frame
     camera_info_topic: /cam_161/camera/rgb/camera_info
@@ -16,8 +16,8 @@ cameras:
     ip: 192.168.3.162
     serial: null
     parameters: ../calib_output/runtime/cam_162
-    sensor_host: 192.168.2.203
-    sensor_source_address: 192.168.2.103
+    sensor_host: 192.168.2.202
+    sensor_source_address: 192.168.2.102
     lidar_frame: cam_162_lidar_frame
     rgb_frame: cam_162_camera_frame
     camera_info_topic: /cam_162/camera/rgb/camera_info
@@ -25,8 +25,8 @@ cameras:
     ip: 192.168.3.163
     serial: null
     parameters: ../calib_output/runtime/cam_163
-    sensor_host: null
-    sensor_source_address: null
+    sensor_host: 192.168.2.203
+    sensor_source_address: 192.168.2.103
     lidar_frame: cam_163_lidar_frame
     rgb_frame: cam_163_camera_frame
     camera_info_topic: /cam_163/camera/rgb/camera_info
@@ -34,8 +34,8 @@ cameras:
     ip: 192.168.3.164
     serial: null
     parameters: ../calib_output/runtime/cam_164
-    sensor_host: null
-    sensor_source_address: null
+    sensor_host: 192.168.2.204
+    sensor_source_address: 192.168.2.104
     lidar_frame: cam_164_lidar_frame
     rgb_frame: cam_164_camera_frame
     camera_info_topic: /cam_164/camera/rgb/camera_info
@@ -43,8 +43,8 @@ cameras:
     ip: 192.168.3.165
     serial: null
     parameters: ../calib_output/runtime/cam_165
-    sensor_host: null
-    sensor_source_address: null
+    sensor_host: 192.168.2.205
+    sensor_source_address: 192.168.2.105
     lidar_frame: cam_165_lidar_frame
     rgb_frame: cam_165_camera_frame
     camera_info_topic: /cam_165/camera/rgb/camera_info

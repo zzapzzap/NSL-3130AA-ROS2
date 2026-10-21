@@ -318,6 +318,11 @@ def profile_file(profile, calibration_root, serial, name, raw=False):
     return raw_profile_file(profile, calibration_root, serial, name)
 
 
+def calibration_marker_ids():
+    """Calibration boards use IDs 0..9, independently of saved map anchor poses."""
+    return list(range(10))
+
+
 def anchor_ids(config_path=None):
     data, path = inventory(config_path)
     anchor = data.get('anchor', {})

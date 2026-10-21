@@ -101,7 +101,41 @@ class CameraDiscoveryTests(unittest.TestCase):
             self.assertIsNone(report['serial'])
             self.assertEqual(report['cached_serial'], 'OLD_SERIAL')
             self.assertEqual(report['files'], {})
-            self.assertIn('Ethernet manufacturer-serial getter', report['reason'])
+            self.assertIn('No live USB or Ethernet SDK identity', report['reason'])
+
+    def test_live_ethernet_ids_select_actual_profile_without_usb(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config, usb, profile = self.fixture(root, serials=())
+            actual = profile.parent/'N010005C4'
+            actual.mkdir()
+            (actual/'intrinsic.yml').write_bytes(b'%YAML:1.0\n---\nactual_camera: true\n')
+            observed = {'serial': 'N010005C4', 'chip_id': 0x100, 'wafer_id': 0x5c4,
+                        'source': 'ethernet_sdk_ids', 'sensor_host': '192.168.2.201'}
+            before = config.read_bytes()
+            report = device.describe_device('cam_161', profile.parent, config, usb, observed)
+            self.assertTrue(report['verified'])
+            self.assertEqual(report['source'], 'ethernet_sdk_ids')
+            self.assertEqual(report['serial'], 'N010005C4')
+            self.assertEqual(report['profile_dir'], str(actual))
+            self.assertEqual(report['files']['intrinsic.yml']['file'], str(actual/'intrinsic.yml'))
+            self.assertEqual(config.read_bytes(), before)
+
+    def test_ethernet_serial_must_match_live_ids_and_sensor_address(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config, usb, profile = self.fixture(root, serials=())
+            observed = {'serial': 'WRONG_SERIAL', 'chip_id': 0x100, 'wafer_id': 0x5c4,
+                        'source': 'ethernet_sdk_ids', 'sensor_host': '192.168.2.201'}
+            report = device.describe_device('cam_161', profile.parent, config, usb, observed)
+            self.assertFalse(report['verified'])
+            observed['serial'] = 'N010005C4'
+            value = yaml.safe_load(config.read_text())
+            value['cameras']['cam_161']['sensor_host'] = '192.168.2.202'
+            config.write_text(yaml.safe_dump(value))
+            report = device.describe_device('cam_161', profile.parent, config, usb, observed)
+            self.assertFalse(report['verified'])
+            self.assertIn('different sensor IP', report['reason'])
 
     def test_multiple_physical_devices_require_unambiguous_binding(self):
         with tempfile.TemporaryDirectory() as directory:

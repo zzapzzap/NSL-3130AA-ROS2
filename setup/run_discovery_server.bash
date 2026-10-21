@@ -15,4 +15,6 @@ port="${NSL_DISCOVERY_PORT:-11811}"
 unset ROS_DISCOVERY_SERVER ROS_SUPER_CLIENT
 unset FASTRTPS_DEFAULT_PROFILES_FILE FASTDDS_DEFAULT_PROFILES_FILE
 
-exec fastdds discovery -i 0 -l "${host_ip}" -p "${port}"
+profile="${HOME}/.ros/fastdds_sirius_server.xml"
+python3 "${project_root}/controller/src/NSL-3130AA-ROS2/setup/dds_profile.py" --ip "$host_ip" --output "$profile" --server >/dev/null
+exec fastdds discovery -x "$profile"

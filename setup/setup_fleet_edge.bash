@@ -3,12 +3,14 @@ set -euo pipefail
 
 setup_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="${SIRIUS_ROBOT_DT_ROOT:-$(cd "${setup_dir}/../../../.." && pwd)}"
+# Edge 161..164 use camera NIC 192.168.2.101..104 in setup/fleet.yaml.
+# Keep the inventory authoritative so setup and the camera runtime agree.
 fleet_first_octet=161
-fleet_last_octet=165
+fleet_last_octet=164
 host_first_octet=166
 host_last_octet=169
 host_ip="${NSL_HOST_IP:-192.168.3.166}"
-default_edge_octets="${NSL_EDGE_OCTETS:-161,162,163,164,165}"
+default_edge_octets="${NSL_EDGE_OCTETS:-161,162,163,164}"
 camera_ip="${NSL_CAMERA_IP:-auto}"
 camera_netmask="${NSL_CAMERA_NETMASK:-255.255.255.0}"
 camera_gateway="${NSL_CAMERA_GATEWAY:-192.168.2.1}"
@@ -63,6 +65,7 @@ _install_unit() {
 }
 
 enable_edge_service() {
+    sudo bash "${repo_root}/setup/install_dds_network.bash"
     [[ "${NSL_INSTALL_EDGE_SERVICE:-1}" =~ ^(1|true|yes)$ ]] || return 0
     local user_name="${SUDO_USER:-${USER}}"
     local rh_setup="${repo_root}/controller/src/ros_humanpose/setup"
@@ -78,6 +81,7 @@ enable_edge_service() {
 }
 
 enable_host_service() {
+    sudo bash "${repo_root}/setup/install_dds_network.bash"
     [[ "${NSL_INSTALL_HOST_SERVICE:-1}" =~ ^(1|true|yes)$ ]] || return 0
     local user_name="${SUDO_USER:-${USER}}"
     local rh_setup="${repo_root}/controller/src/ros_humanpose/setup"

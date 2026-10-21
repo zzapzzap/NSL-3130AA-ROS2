@@ -8,6 +8,26 @@ import sys
 from pathlib import Path
 
 
+def compose_camera_serial(chip_id, wafer_id):
+    """The fleet's NSL device serial is N + four hex digits per SDK ID."""
+    if any(type(value) is not int or not 0 <= value <= 0xffff for value in (chip_id, wafer_id)):
+        raise ValueError('SDK identity fields must be unsigned 16-bit integers')
+    if (chip_id, wafer_id) in ((0, 0), (0xffff, 0xffff)):
+        raise ValueError('SDK identity fields are uninitialized')
+    return f'N{chip_id:04X}{wafer_id:04X}'
+
+
+def validate_ethernet_identity(record, sensor_host=None):
+    if not isinstance(record, dict) or record.get('source') != 'ethernet_sdk_ids':
+        raise ValueError('Not a live Ethernet SDK identity observation')
+    serial = compose_camera_serial(record.get('chip_id'), record.get('wafer_id'))
+    if record.get('serial') != serial:
+        raise ValueError('Camera serial does not match its SDK chip/wafer IDs')
+    if sensor_host and record.get('sensor_host') != sensor_host:
+        raise ValueError('Camera identity was read from a different sensor IP')
+    return serial
+
+
 def detect_camera_serials(usb_sys=Path('/sys/bus/usb/devices')) -> list:
     usb_sys = Path(usb_sys)
     serials = set()
