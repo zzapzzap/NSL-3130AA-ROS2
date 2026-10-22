@@ -1,3 +1,5 @@
+#include <atomic>
+#include <array>
 #include <cstdio>
 #include <chrono>
 #include <functional>
@@ -105,6 +107,13 @@ namespace nanosys {
 		int 			nsl_handle;
 		CalibParams calib_;
 	private:
+        std::array<std::atomic<long long>, 7> heartbeat_stages_us_{};
+        std::atomic<unsigned long> heartbeat_acquired_{0}, heartbeat_published_{0};
+        std::atomic<long long> heartbeat_publish_us_{0};
+        std::atomic<long long> heartbeat_last_frame_ns_{0};
+        rclcpp::TimerBase::SharedPtr heartbeat_timer_;
+        std::chrono::steady_clock::time_point heartbeat_time_ = std::chrono::steady_clock::now();
+
 		std::string yaml_path_;
 	    const std::unordered_map<int, std::string> modeIntMap = {
 	        {1, "DISTANCE"},

@@ -111,6 +111,30 @@ roboscanPublisher::roboscanPublisher() :
 			: ament_index_cpp::get_package_share_directory("roboscan_nsl3130") + "/lidar_params.yaml";
 	}
 
+    // Separate executor timer: report zero even if SDK input/publish stalls.
+    heartbeat_timer_ = this->create_wall_timer(1s, [this]() {
+        const auto now = std::chrono::steady_clock::now();
+        const double seconds = std::chrono::duration<double>(now - heartbeat_time_).count();
+        heartbeat_time_ = now;
+        const auto acquired = heartbeat_acquired_.exchange(0);
+        const auto published = heartbeat_published_.exchange(0);
+        const auto publish_us = heartbeat_publish_us_.exchange(0);
+        const auto last_ns = heartbeat_last_frame_ns_.load();
+        const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
+        RCLCPP_INFO(get_logger(),
+            "[fps] camera=%s sdk_fps=%.2f publish_fps=%.2f publish_wall_ms=%.2f last_frame_age_s=%.2f window_s=%.3f",
+            get_namespace(), acquired / seconds, published / seconds,
+            published ? publish_us / (1000.0 * published) : 0.0,
+            last_ns ? (now_ns - last_ns) / 1e9 : -1.0, seconds);
+        double stages[7];
+        for (size_t i = 0; i < 7; ++i) {
+            const auto us = heartbeat_stages_us_[i].exchange(0);
+            stages[i] = published ? us / (1000.0 * published) : 0.0;
+        }
+        RCLCPP_INFO(get_logger(), "[fps] profile camera=%s images_ms=%.2f rgb_copy_ms=%.2f rgb_publish_ms=%.2f raw_build_ms=%.2f raw_publish_ms=%.2f color_build_ms=%.2f color_publish_ms=%.2f",
+            get_namespace(), stages[0], stages[1], stages[2], stages[3], stages[4], stages[5], stages[6]);
+    });
+
     callback_handle_ = this->add_on_set_parameters_callback(std::bind(&roboscanPublisher::parametersCallback, this, std::placeholders::_1));
 
 	reconfigure = false;
@@ -310,15 +334,25 @@ void roboscanPublisher::threadCallback()
 		{
 			if( nsl_getPointCloudRgbData(nsl_handle, latestFrame.get(), rgbFrame, 0) == NSL_ERROR_TYPE::NSL_SUCCESS )
 			{
+                heartbeat_acquired_.fetch_add(1);
+                const auto publish_start = std::chrono::steady_clock::now();
+                heartbeat_last_frame_ns_.store(std::chrono::duration_cast<std::chrono::nanoseconds>(publish_start.time_since_epoch()).count());
 				frameCount++;
 				publishFrame(latestFrame.get(), rgbFrame);
+                heartbeat_publish_us_.fetch_add(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - publish_start).count());
+                heartbeat_published_.fetch_add(1);
 			}
 		}
 		else{
 		if( nsl_getPointCloudData(nsl_handle, latestFrame.get(), 0) == NSL_ERROR_TYPE::NSL_SUCCESS )
 			{
+                heartbeat_acquired_.fetch_add(1);
+                const auto publish_start = std::chrono::steady_clock::now();
+                heartbeat_last_frame_ns_.store(std::chrono::duration_cast<std::chrono::nanoseconds>(publish_start.time_since_epoch()).count());
 				frameCount++;
 				publishFrame(latestFrame.get(), NULL);
+                heartbeat_publish_us_.fetch_add(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - publish_start).count());
+                heartbeat_published_.fetch_add(1);
 			}
 		}
 
@@ -821,7 +855,10 @@ void roboscanPublisher::publishCalibratedRgbCloud(
 
     msgRgb.header.stamp    = stamp;
     msgRgb.header.frame_id = viewerParam.frame_id;
+    const auto profile_publish_start = std::chrono::steady_clock::now();
+    heartbeat_stages_us_[5].fetch_add(std::chrono::duration_cast<std::chrono::microseconds>(profile_publish_start - t0).count());
     pointcloudRgbPub->publish(msgRgb);
+    heartbeat_stages_us_[6].fetch_add(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - profile_publish_start).count());
 }
 
 void roboscanPublisher::renewParameter()
@@ -1297,13 +1334,20 @@ void roboscanPublisher::setMatrixColor(Mat image, int x, int y, NslVec3b color)
 
 void roboscanPublisher::publishFrame(NslPCD *frame, NslVec3b *rgbframe)
 {
+    auto profile_mark = std::chrono::steady_clock::now();
+    auto profile_stage = [this, &profile_mark](size_t stage) {
+        const auto now = std::chrono::steady_clock::now();
+        heartbeat_stages_us_[stage].fetch_add(std::chrono::duration_cast<std::chrono::microseconds>(now - profile_mark).count());
+        profile_mark = now;
+    };
 	static rclcpp::Clock s_rclcpp_clock;
 	auto data_stamp = s_rclcpp_clock.now();
 
 	cv::Mat distanceMat(frame->height, frame->width, CV_8UC3, Scalar(255, 255, 255));	// distance
 	cv::Mat amplitudeMat(frame->height, frame->width, CV_8UC3, Scalar(255, 255, 255));	// amplitude
 #ifdef image_transfer_function
-	cv::Mat rgbMat(NSL_RGB_IMAGE_HEIGHT, NSL_RGB_IMAGE_WIDTH, CV_8UC3, Scalar(255, 255, 255));
+	// SDK RGB memory is BGR-packed; keep it as a view until toImageMsg copies it.
+	cv::Mat rgbMat;
 #endif
 
 
@@ -1332,7 +1376,7 @@ void roboscanPublisher::publishFrame(NslPCD *frame, NslVec3b *rgbframe)
 				result.push_back(static_cast<uint8_t>(depth_mm & 0xFF));		 // LSB
 				result.push_back(static_cast<uint8_t>((depth_mm >> 8) & 0xFF)); // MSB
 
-				setMatrixColor(distanceMat, x+xMin, y+yMin, nsl_getDistanceColor(distance));
+				if (viewerParam.cvShow) setMatrixColor(distanceMat, x, y, nsl_getDistanceColor(distance));
 			}
 		}
 
@@ -1412,6 +1456,7 @@ void roboscanPublisher::publishFrame(NslPCD *frame, NslVec3b *rgbframe)
 	}		
 	
 
+    profile_stage(0);
 #ifdef image_transfer_function
 	if(frame->operationMode == OPERATION_MODE_OPTIONS::RGB_MODE 
 		|| frame->operationMode == OPERATION_MODE_OPTIONS::RGB_DISTANCE_MODE 
@@ -1419,17 +1464,8 @@ void roboscanPublisher::publishFrame(NslPCD *frame, NslVec3b *rgbframe)
 		|| frame->operationMode == OPERATION_MODE_OPTIONS::RGB_DISTANCE_GRAYSCALE_MODE)
 	{
 		if( rgbframe != NULL ){
-			int totalPixels = NSL_RGB_IMAGE_HEIGHT * NSL_RGB_IMAGE_WIDTH;
-			cv::Vec3b* dstPtr = rgbMat.ptr<cv::Vec3b>();
-			NslOption::NslVec3b* srcPtr = &rgbframe[0];
-			
-			for (int i = 0; i < totalPixels; ++i) {
-				dstPtr[i] = cv::Vec3b(
-					srcPtr[i].b,  // blue
-					srcPtr[i].g,  // green
-					srcPtr[i].r   // red
-				);
-			}
+            static_assert(sizeof(NslVec3b) == 3, "SDK BGR layout changed");
+            rgbMat = cv::Mat(NSL_RGB_IMAGE_HEIGHT, NSL_RGB_IMAGE_WIDTH, CV_8UC3, rgbframe);
 
 			cv_bridge::CvImagePtr cv_ptr(new cv_bridge::CvImage);
 			cv_ptr->header.stamp = data_stamp;
@@ -1437,7 +1473,10 @@ void roboscanPublisher::publishFrame(NslPCD *frame, NslVec3b *rgbframe)
 			cv_ptr->image = rgbMat;
 			cv_ptr->encoding = "bgr8";
 		
-			imagePublisher.publish(cv_ptr->toImageMsg());
+            auto image_msg = cv_ptr->toImageMsg();
+            profile_stage(1);
+            imagePublisher.publish(image_msg);
+            profile_stage(2);
 		}
 	}
 #endif
@@ -1446,6 +1485,11 @@ void roboscanPublisher::publishFrame(NslPCD *frame, NslVec3b *rgbframe)
 		&& frame->operationMode != OPERATION_MODE_OPTIONS::GRAYSCALE_MODE )
 	{
 		const size_t nPixel = frame->width * frame->height;
+        const int xMin = frame->roiXMin;
+        const int yMin = frame->roiYMin;
+        // Keep organized XYZ+intensity available for explicit calibration/audit
+        // subscribers, but do not build/serialize a duplicate cloud in normal use.
+        if (pointcloudPub->get_subscription_count() > 0) {
 		pcl::PointCloud<pcl::PointXYZI>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZI>());
 		cloud->header.frame_id = viewerParam.frame_id;
 		cloud->header.stamp = pcl_conversions::toPCL(data_stamp);
@@ -1455,8 +1499,7 @@ void roboscanPublisher::publishFrame(NslPCD *frame, NslVec3b *rgbframe)
 		cloud->is_dense = false;
 		cloud->points.resize(nPixel);
 
-		int xMin = frame->roiXMin;
-		int yMin = frame->roiYMin;
+
 
 		for(int y = 0, index = 0; y < frame->height; y++)
 		{
@@ -1487,7 +1530,10 @@ void roboscanPublisher::publishFrame(NslPCD *frame, NslVec3b *rgbframe)
 		pcl::toROSMsg(*cloud, msg);
 		msg.header.stamp = data_stamp;
 		msg.header.frame_id = viewerParam.frame_id;
+        profile_stage(3);
 		pointcloudPub->publish(msg);
+        profile_stage(4);
+        }
 
 		if( rgbframe != nullptr && (
 			frame->operationMode == OPERATION_MODE_OPTIONS::RGB_DISTANCE_MODE ||
@@ -1543,7 +1589,9 @@ void roboscanPublisher::publishFrame(NslPCD *frame, NslVec3b *rgbframe)
 				pcl::toROSMsg(*cloudRgb, msgRgb);
 				msgRgb.header.stamp = data_stamp;
 				msgRgb.header.frame_id = viewerParam.frame_id;
+                profile_stage(5);
 				pointcloudRgbPub->publish(msgRgb);
+                profile_stage(6);
 			}
 		}
 	}

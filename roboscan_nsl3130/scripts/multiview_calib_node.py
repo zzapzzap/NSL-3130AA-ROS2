@@ -286,7 +286,11 @@ class MultiviewCalibNode(Node):
         # cloud arrives we fall back to the image-topic-derived names above.
         self.live_lidar_frame = None
         cloud_topic = self._cloud_topic(args.image_topic)
-        self.create_subscription(PointCloud2, cloud_topic, self._cloud_cb, _sensor_qos(1))
+        self._raw_cloud_topic = cloud_topic
+        self._raw_cloud_sub = None
+        # Idle listener only needs the frame ID; do not force raw cloud generation.
+        self._frame_sub = self.create_subscription(PointCloud2, cloud_topic + '_rgb',
+                                 lambda msg: self._cloud_cb(msg, frame_only=True), _sensor_qos(1))
 
         # Depth refinement: snap the marker depth to the LiDAR-measured plane.
         # Monocular STag gives a good rotation + viewing ray but a weak metric depth
@@ -312,6 +316,7 @@ class MultiviewCalibNode(Node):
         # collects after an Empty message lands on trigger_topic (host broadcast),
         # re-arming after each save. In direct mode it is armed from the start.
         self.armed = not args.wait_trigger
+        self._set_raw_cloud_subscription(self.armed)
         if args.wait_trigger:
             self.create_subscription(Empty, args.trigger_topic, self._on_trigger, 10)
 
@@ -447,6 +452,7 @@ class MultiviewCalibNode(Node):
         self._collect_start = None
         self.saved = False
         self.armed = not idle
+        self._set_raw_cloud_subscription(self.armed)
 
     def _on_roi_debug_flush(self, _msg: Empty):
         if self.roi_marker_pub is None:
@@ -568,14 +574,26 @@ class MultiviewCalibNode(Node):
         ns = _namespace_from_topic(image_topic)
         return f'/{ns}/camera/point_cloud' if ns else '/camera/point_cloud'
 
-    def _cloud_cb(self, msg: PointCloud2):
+    def _set_raw_cloud_subscription(self, enabled):
+        enabled = enabled and self.a.depth_refine and self._ext is not None
+        if enabled and self._raw_cloud_sub is None:
+            self._raw_cloud_sub = self.create_subscription(
+                PointCloud2, self._raw_cloud_topic, self._cloud_cb, _sensor_qos(1))
+        elif not enabled and self._raw_cloud_sub is not None:
+            self.destroy_subscription(self._raw_cloud_sub)
+            self._raw_cloud_sub = None
+
+    def _cloud_cb(self, msg: PointCloud2, frame_only=False):
         if self.live_lidar_frame is None and msg.header.frame_id:
             self.live_lidar_frame = msg.header.frame_id
             if not self.live_lidar_frame.startswith(self.ns):
                 self.get_logger().warn(
                     f'live point-cloud frame "{self.live_lidar_frame}" differs from the '
                     f'topic-derived namespace "{self.ns}"; the live frame will be saved.')
-        if self.a.depth_refine and self._ext is not None and not self.saved:
+        if frame_only and getattr(self, '_frame_sub', None) is not None:
+            self.destroy_subscription(self._frame_sub)
+            self._frame_sub = None
+        if not frame_only and self.a.depth_refine and self._ext is not None and not self.saved:
             pts = _cloud_to_xyz(msg)
             if pts is not None:
                 self._clouds.append(pts)

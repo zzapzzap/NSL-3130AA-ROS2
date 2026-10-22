@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Generate the shared LAN-only Fast DDS profile for fleet clients and server."""
+"""LAN-restricted UDP plus same-host SHM; preserve automatic data locators.
+
+An explicit UDP-only defaultUnicastLocatorList suppresses automatic SHM data
+locators. Discovery stays unicast to Main; UDP interfaces remain whitelisted.
+"""
 import argparse
 import os
 from pathlib import Path
@@ -25,17 +29,22 @@ def profile_xml(address, server=False):
         <receiveBufferSize>16777216</receiveBufferSize>
         <interfaceWhiteList><address>{address}</address></interfaceWhiteList>
       </transport_descriptor>
+      <transport_descriptor>
+        <transport_id>sirius_local_shm</transport_id><type>SHM</type>
+        <maxMessageSize>8388608</maxMessageSize>
+        <segment_size>134217728</segment_size>
+        <port_queue_capacity>8192</port_queue_capacity>
+      </transport_descriptor>
     </transport_descriptors>
     <participant profile_name="sirius_lan" is_default_profile="true">
       <rtps>
         {guid}
-        <defaultUnicastLocatorList><locator><udpv4><address>{address}</address></udpv4></locator></defaultUnicastLocatorList>
         <builtin>
           {discovery}
           <metatrafficUnicastLocatorList><locator><udpv4><address>{address}</address>{port}</udpv4></locator></metatrafficUnicastLocatorList>
           <initialPeersList><locator><udpv4><address>192.168.3.166</address><port>11811</port></udpv4></locator></initialPeersList>
         </builtin>
-        <userTransports><transport_id>sirius_lan</transport_id></userTransports>
+        <userTransports><transport_id>sirius_lan</transport_id><transport_id>sirius_local_shm</transport_id></userTransports>
         <useBuiltinTransports>false</useBuiltinTransports>
       </rtps>
     </participant>

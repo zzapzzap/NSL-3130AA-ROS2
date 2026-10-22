@@ -174,6 +174,8 @@ class ExtrinsicTfNode(Node):
             f'[TF] {lidar_frame} → {cam_frame}  '
             f'cam@lidar=({t_lc[0]:.3f}, {t_lc[1]:.3f}, {t_lc[2]:.3f}) m  from {yml.name}')
         self._done = True   # static transform latches; keep node alive to serve it
+        self.destroy_subscription(self._sub)
+        self._sub = None
 
 
 def main():

@@ -316,7 +316,7 @@ def generate_launch_description():
         # Extrinsic → TF. Runs outside the namespace (publishes serial-prefixed
         # frames to the global /tf), so it needs the absolute point-cloud topic.
         if _is_true(context, 'use_extrinsic_tf'):
-            lidar_topic = _abs_topic(ns, LaunchConfiguration('point_cloud_topic').perform(context))
+            lidar_topic = _abs_topic(ns, LaunchConfiguration('point_cloud_rgb_topic').perform(context))
             cmd = ['python3', extrinsic_tf_script,
                    '--calib-dir', calib_dir,
                    '--lidar-topic', lidar_topic]

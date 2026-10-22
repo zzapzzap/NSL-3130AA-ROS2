@@ -5,13 +5,13 @@ LensType: LENS_SF
 LidarAngle: 0
 IsReference: true
 HDRMode: HDR_None
-IntegrationTime3D: 350
+IntegrationTime3D: 1000
 IntegrationTimeHdr1: 700
 IntegrationTimeHdr2: 80
 IntegrationTimeGray: 100
-MinAmplitude: 15
+MinAmplitude: 10
 Modulation: MOD_12Mhz
-Channel: 0
+Channel: 1
 MedianFilter: true
 GaussianFilter: true
 TemporalFilterFactor: 300

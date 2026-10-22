@@ -55,6 +55,12 @@ CHECK
                 self.assertEqual([x.text for x in xml.findall('.//d:initialPeersList//d:address',NS)],['192.168.3.166'])
                 self.assertEqual(xml.find('.//d:maxMessageSize',NS).text,'1400')
                 self.assertEqual(xml.find('.//d:sendBufferSize',NS).text,'16777216')
+                self.assertIsNone(xml.find('.//d:defaultUnicastLocatorList', NS))
+                descriptors = xml.findall('.//d:transport_descriptor', NS)
+                shm = next(d for d in descriptors if d.find('d:type', NS).text == 'SHM')
+                self.assertEqual(shm.find('d:segment_size', NS).text, '134217728')
+                self.assertGreaterEqual(int(shm.find('d:maxMessageSize', NS).text), 1920*1080*3)
+                self.assertIn('sirius_local_shm', [d.text for d in xml.findall('.//d:userTransports/d:transport_id', NS)])
 
     def test_interactive_edge_terminal_gets_full_graph_for_cli_daemon(self):
         data,_=self.run_setup(['192.168.3.161'],interactive=True)
