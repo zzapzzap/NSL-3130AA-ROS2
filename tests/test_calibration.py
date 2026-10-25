@@ -1,80 +1,102 @@
-"""Check opt-in shell installation and verified calibration registry updates."""
+"""Calibration cloud demand, frame composition, and verified SDK writeback."""
 import ast
 import hashlib
-import importlib.util
-import json
 import os
 from pathlib import Path
-import subprocess
 import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+
+import numpy as np
 import yaml
 
-ROOT=Path(__file__).resolve().parents[4]
-SETUP=ROOT/'setup'
-CAMERA=ROOT/'controller/src/NSL-3130AA-ROS2/roboscan_nsl3130'
-sys.path.insert(0,str(ROOT/'controller/src/robot_dt_bridge/config'))
-sys.path.insert(0,str(CAMERA/'scripts'))
+
+ROOT = Path(__file__).resolve().parents[4]
+CAMERA = Path(__file__).resolve().parents[1]/'roboscan_nsl3130'
+sys.path.insert(0, str(ROOT/'controller/src/robot_dt_bridge/config'))
+sys.path.insert(0, str(CAMERA/'scripts'))
 
 
-class ShellInstallTests(unittest.TestCase):
-    def test_template_replaces_controller_aliases_and_sets_requested_directories(self):
-        script = '\n'.join([
-            'alias cb="echo legacy"',
-            'export ROOT_DIRECTORY="$2"',
-            'source "$1"',
-            '[[ "$ROOT_DIRECTORY" == "$2" ]]',
-            '[[ "$CONTROLLER_DIRECTORY" == "$2/controller" ]]',
-            '[[ "$CONFIG_DIRECTORY" == "$2" && "$DATA_DIRECTORY" == "$2" ]]',
-            '[[ "$ROS_DOMAIN_ID" == 42 ]]',
-            '[[ "$(type -t cb)" == function ]]',
-        ])
-        result = subprocess.run(['bash','-c',script,'test-template',str(SETUP/'bashrc.template.bash'),str(ROOT)],
-                                capture_output=True,text=True,timeout=5)
-        self.assertEqual(result.returncode,0,result.stderr)
+def methods():
+    path = Path(__file__).parents[1]/'roboscan_nsl3130/scripts/multiview_calib_node.py'
+    tree = ast.parse(path.read_text())
+    selected = [n for node in tree.body if isinstance(node, ast.ClassDef)
+                for n in node.body if isinstance(n, ast.FunctionDef)
+                and n.name in ('_set_raw_cloud_subscription', '_cloud_cb')]
+    namespace = {'PointCloud2': object, '_sensor_qos': lambda depth: depth,
+                 '_cloud_to_xyz': lambda msg: ('full-raw-xyz',)}
+    exec(compile(ast.Module(body=selected, type_ignores=[]), str(path), 'exec'), namespace)
+    return namespace
 
-    def test_preview_cannot_edit_requested_rc(self):
-        with tempfile.TemporaryDirectory() as directory:
-            rc=Path(directory)/'test.bashrc'
-            rc.write_text('# user settings\nexport USER_TEST=kept\n')
-            before=rc.read_bytes()
-            result=subprocess.run(['bash',str(SETUP/'install_shell.bash'),'--rc',str(rc)],
-                                  capture_output=True,text=True,timeout=5)
-            self.assertEqual(result.returncode,0,result.stderr)
-            self.assertEqual(rc.read_bytes(),before)
-            self.assertIn('Preview only',result.stdout)
 
-    def test_explicit_install_is_idempotent_and_keeps_personal_settings(self):
-        with tempfile.TemporaryDirectory() as directory:
-            rc=Path(directory)/'test.bashrc'
-            original='# user settings\nalias user_cmd="echo kept"\n'
-            rc.write_text(original)
-            command=['bash',str(SETUP/'install_shell.bash'),'--install-shell','--rc',str(rc)]
-            first=subprocess.run(command,capture_output=True,text=True,timeout=5)
-            self.assertEqual(first.returncode,0,first.stderr)
-            content=rc.read_bytes()
-            second=subprocess.run(command,capture_output=True,text=True,timeout=5)
-            self.assertEqual(second.returncode,0,second.stderr)
-            self.assertEqual(rc.read_bytes(),content)
-            self.assertIn('alias user_cmd=',rc.read_text())
-            self.assertEqual(rc.read_text().count('# >>> SiriusRobotDT managed shell >>>'),1)
-            self.assertEqual(rc.with_name(rc.name+'.siriusrobotdt.bak').read_text(),original)
+def test_raw_subscription_only_while_refining():
+    ns = methods()
+    created, destroyed = [], []
+    def create(*args):
+        created.append(args)
+        return 'raw-subscription'
+    node = SimpleNamespace(a=SimpleNamespace(depth_refine=True), _ext=True,
+                           _raw_cloud_sub=None, _raw_cloud_topic='/cam_161/camera/point_cloud',
+                           _cloud_cb=lambda msg: None, create_subscription=create,
+                           destroy_subscription=destroyed.append)
+    update = ns['_set_raw_cloud_subscription']
+    update(node, False)
+    assert not created
+    update(node, True)
+    update(node, True)
+    assert len(created) == 1
+    assert created[0][1] == '/cam_161/camera/point_cloud'
+    update(node, False)
+    assert destroyed == ['raw-subscription']
+    assert node._raw_cloud_sub is None
 
-    def test_sensor_addresses_do_not_use_arithmetic_or_fill_unknown_devices(self):
-        spec=importlib.util.spec_from_file_location('sirius_camera_network_test',CAMERA.parent/'setup/camera_network.py')
-        module=importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        with tempfile.TemporaryDirectory() as directory:
-            config=Path(directory)/'config.yaml'
-            config.write_text(yaml.safe_dump({'cameras':{
-                'cam_161':{'sensor_host':'192.168.2.202','sensor_source_address':'192.168.2.102'},
-                'cam_163':{'sensor_host':None,'sensor_source_address':None}}}))
-            self.assertEqual(module.camera_field('161','sensor_host',config),'192.168.2.202')
-            self.assertEqual(module.camera_field('163','sensor_host',config),'')
-            self.assertEqual(module.camera_field('165','sensor_host',config),'')
+
+def test_rgb_frame_metadata_does_not_replace_raw_depth_refinement():
+    callback = methods()['_cloud_cb']
+    node = SimpleNamespace(live_lidar_frame='cam_161_lidar_frame',
+                           a=SimpleNamespace(depth_refine=True), _ext=True,
+                           saved=False, _clouds=[])
+    msg = SimpleNamespace(header=SimpleNamespace(frame_id='cam_161_lidar_frame'))
+    callback(node, msg, frame_only=True)
+    assert not node._clouds
+    callback(node, msg)
+    assert node._clouds == [('full-raw-xyz',)]
+
+
+def test_frame_metadata_subscription_released_after_first_message():
+    callback = methods()['_cloud_cb']
+    destroyed = []
+    node = SimpleNamespace(live_lidar_frame='cam_161_lidar_frame',
+                           a=SimpleNamespace(depth_refine=True), _ext=True,
+                           saved=False, _clouds=[], _frame_sub='metadata',
+                           destroy_subscription=destroyed.append)
+    msg = SimpleNamespace(header=SimpleNamespace(frame_id='cam_161_lidar_frame'))
+    callback(node, msg, frame_only=True)
+    assert destroyed == ['metadata']
+    assert node._frame_sub is None
+    assert not node._clouds
+
+
+class GlobalFrameTests(unittest.TestCase):
+    def test_saved_marker_relative_poses_compose_to_the_map_pose(self):
+        frames = yaml.safe_load((ROOT/'controller/src/NSL-3130AA-ROS2/calib_output/global_frames.yml').read_text())
+        identity = frames['global']['anchor']['id_0']
+        if identity['verification'] == 'unverified_identity_seed':
+            np.testing.assert_array_equal(np.array(identity['tf']).reshape(4, 4), np.eye(4))
+        for name, camera in frames['global']['cameras'].items():
+            for marker, anchor in frames['global']['anchor'].items():
+                relation = frames['relative'][marker][name]
+                self.assertEqual(relation['parent'], marker)
+                self.assertEqual(relation['child'], f'{name}_lidar_frame')
+                if camera['tf'] is None:
+                    self.assertIsNone(relation['tf'])
+                else:
+                    map_anchor = np.array(anchor['tf']).reshape(4, 4)
+                    anchor_camera = np.array(relation['tf']).reshape(4, 4)
+                    np.testing.assert_allclose(map_anchor @ anchor_camera,
+                                               np.array(camera['tf']).reshape(4, 4), atol=1e-12)
 
 
 class CompletedWritebackTests(unittest.TestCase):
@@ -193,7 +215,3 @@ class CompletedWritebackTests(unittest.TestCase):
             self.assertFalse((config.parent/'cameras').exists())
             manifest = yaml.safe_load((calibration/'runtime/profiles.yaml').read_text())
             self.assertEqual(manifest['profiles']['TEST_SERIAL']['multiview']['sha256'], request.sha256)
-
-
-if __name__=='__main__':
-    unittest.main()

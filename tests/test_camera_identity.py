@@ -1,4 +1,5 @@
-"""Use fake USB sysfs and raw profiles; no camera/network access is needed."""
+"""Physical serial discovery and shared camera-link identity without real devices."""
+import ast
 import hashlib
 import importlib.util
 import json
@@ -10,19 +11,29 @@ import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+
 import rclpy
 from rclpy.executors import SingleThreadedExecutor
 from std_srvs.srv import Trigger
 from ros_humanpose.srv import GetWeight
-
 import yaml
 
 ROOT = Path(__file__).resolve().parents[4]
-SCRIPTS = ROOT/'controller/src/NSL-3130AA-ROS2/roboscan_nsl3130/scripts'
+MODULE = ROOT/'controller/src/NSL-3130AA-ROS2'
+SCRIPTS = MODULE/'roboscan_nsl3130/scripts'
+LAUNCH = MODULE/'roboscan_nsl3130/launch/camera.launch.py'
 sys.path.insert(0, str(SCRIPTS))
-spec = importlib.util.spec_from_file_location('device_discovery_test', SCRIPTS/'camera_device_info_node.py')
-device = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(device)
+
+
+def load_module(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+device = load_module('device_discovery_test', SCRIPTS/'camera_device_info_node.py')
+identity = load_module('detect_identity', SCRIPTS/'detect_camera_id.py')
 
 
 class CameraDiscoveryTests(unittest.TestCase):
@@ -55,7 +66,8 @@ class CameraDiscoveryTests(unittest.TestCase):
     def fixture(self, root, serials=('NEW_SERIAL',)):
         config = root/'config.yaml'
         config.write_text(yaml.safe_dump({'schema_version': 2,
-            'cameras': {'cam_161': {'serial': 'OLD_SERIAL', 'parameters': 'profiles/old'}},
+            'cameras': {'cam_161': {'serial': 'OLD_SERIAL', 'parameters': 'profiles/old',
+                                  'sensor_host': '192.168.2.201'}},
             'anchor': {'id_7': {'tf': None}, 'id_0': {'tf': None}}}))
         cache = root/'cameras/cam_161.yaml'
         cache.parent.mkdir()
@@ -211,6 +223,82 @@ class CameraDiscoveryTests(unittest.TestCase):
                     client.destroy_node()
                     server.destroy_node()
                     rclpy.shutdown()
+
+
+class EthernetIdentityTests(unittest.TestCase):
+    def test_known_device_ids_preserve_padding_and_chip_wafer_order(self):
+        for chip,wafer,serial in [(0x100,0x5c4,'N010005C4'),(0x8b,0x60d,'N008B060D'),(0xc7,0x5c3,'N00C705C3')]:
+            self.assertEqual(identity.compose_camera_serial(chip,wafer),serial)
+
+    def test_invalid_and_uninitialized_fields_are_not_serials(self):
+        for chip,wafer in [(-1,1476),(256,-1),(65536,1),(True,1476),('256',1476),(0,0),(65535,65535)]:
+            with self.assertRaises(ValueError):identity.compose_camera_serial(chip,wafer)
+
+    def test_cached_serial_is_not_a_live_sdk_observation(self):
+        with self.assertRaises(ValueError):
+            identity.validate_ethernet_identity({'serial':'N010005C4','source':'cache'})
+
+
+def network_functions():
+    """Exercise actual launch resolvers without constructing ROS processes."""
+    tree = ast.parse(LAUNCH.read_text())
+    selected = {'_fleet_octet', '_resolve_camera_network', '_resolve_namespace'}
+    functions = [node for node in ast.walk(tree)
+                 if isinstance(node, ast.FunctionDef) and node.name in selected]
+    constants = {node.targets[0].id: ast.literal_eval(node.value)
+                 for node in tree.body if isinstance(node, ast.Assign)
+                 and isinstance(node.targets[0], ast.Name)
+                 and node.targets[0].id in ('FLEET_FIRST_OCTET', 'FLEET_LAST_OCTET', 'DEFAULT_CAMERA_GATEWAY')}
+
+    class Configuration:
+        def __init__(self, name):
+            self.name = name
+
+        def perform(self, context):
+            return context[self.name]
+
+    scope = {**constants, 'LaunchConfiguration': Configuration,
+             'os': os, 'ws_root': str(ROOT)}
+    exec(compile(ast.Module(body=functions, type_ignores=[]), str(LAUNCH), 'exec'), scope)
+    return scope
+
+
+class IsolatedCameraLinkRuntimeTests(unittest.TestCase):
+    def test_shared_camera_address_keeps_five_distinct_edge_namespaces(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory)/'fleet.yaml'
+            config.write_text(yaml.safe_dump({'schema_version': 1,
+                'server': {'ip': '192.168.3.166', 'domain_id': 42},
+                'cameras': {f'cam_{octet}': {'ip': f'192.168.3.{octet}',
+                    'sensor_host': '192.168.2.101', 'sensor_source_address': '192.168.2.100'}
+                    for octet in range(161, 166)}}))
+            scope = network_functions()
+            context = {'camera_ip': 'auto', 'camera_gateway': 'auto',
+                       'connection': 'ethernet', 'namespace': 'auto'}
+            with patch.dict(os.environ, {'SIRIUS_CONFIG': str(config)}):
+                namespaces = set()
+                for octet in range(161, 166):
+                    with self.subTest(octet=octet):
+                        self.assertEqual(scope['_resolve_camera_network'](context, str(octet)),
+                                         ('192.168.2.101', '192.168.2.1'))
+                        namespace = scope['_resolve_namespace'](context, str(octet))
+                        self.assertEqual(namespace, f'cam_{octet}')
+                        namespaces.add(namespace)
+                self.assertEqual(len(namespaces), 5)
+
+    def test_explicit_sensor_address_and_namespace_overrides_still_work(self):
+        scope = network_functions()
+        context = {'camera_ip': '192.168.2.220', 'camera_gateway': '192.168.2.100',
+                   'connection': 'ethernet', 'namespace': '/inspection'}
+        self.assertEqual(scope['_resolve_camera_network'](context, '162'),
+                         ('192.168.2.220', '192.168.2.100'))
+        self.assertEqual(scope['_resolve_namespace'](context, '162'), 'inspection')
+
+    def test_main_cannot_resolve_an_edge_camera_implicitly(self):
+        scope = network_functions()
+        context = {'camera_ip': 'auto', 'camera_gateway': 'auto', 'connection': 'ethernet'}
+        with self.assertRaisesRegex(ValueError, '161-165'):
+            scope['_resolve_camera_network'](context, '166')
 
 
 if __name__ == '__main__':

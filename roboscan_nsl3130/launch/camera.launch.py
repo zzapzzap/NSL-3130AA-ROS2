@@ -19,7 +19,7 @@ from launch_ros.actions import Node
 
 
 FLEET_FIRST_OCTET = 161
-FLEET_LAST_OCTET = 164
+FLEET_LAST_OCTET = 165
 HOST_FIRST_OCTET = 166
 HOST_LAST_OCTET = 169
 DEFAULT_CAMERA_GATEWAY = '192.168.2.1'
@@ -108,7 +108,7 @@ def generate_launch_description():
         return None
 
     def _resolve_camera_network(context, ip_octet):
-        """Use explicit per-Edge sensor_host; LAN octets only name ROS namespaces."""
+        """Read the isolated camera link; LAN octets only name ROS namespaces."""
         octet = _fleet_octet(ip_octet)
         raw_ip = LaunchConfiguration('camera_ip').perform(context).strip()
         raw_gateway = LaunchConfiguration('camera_gateway').perform(context).strip()
@@ -116,7 +116,7 @@ def generate_launch_description():
             if LaunchConfiguration('connection').perform(context).strip().lower() == 'usb':
                 return '', DEFAULT_CAMERA_GATEWAY if raw_gateway.lower() == 'auto' else raw_gateway
             if octet is None:
-                raise ValueError('camera_ip:=auto requires an Edge LAN address in 192.168.3.161-164; set camera_ip explicitly.')
+                raise ValueError('camera_ip:=auto requires an Edge LAN address in 192.168.3.161-165; set camera_ip explicitly.')
             import importlib.util
             config_script = os.path.join(ws_root, 'controller', 'src', 'NSL-3130AA-ROS2', 'setup', 'camera_network.py')
             spec = importlib.util.spec_from_file_location('sirius_camera_network', config_script)
@@ -124,7 +124,7 @@ def generate_launch_description():
             spec.loader.exec_module(config_module)
             camera_ip = config_module.camera_field(str(octet), 'sensor_host')
             if not camera_ip:
-                raise ValueError(f'config/cameras/cam_{octet}.yaml sensor_host is not set; set the actual sensor address or camera_ip launch argument.')
+                raise ValueError(f'cam_{octet} sensor_host is not set in the camera inventory; set the actual sensor address or camera_ip launch argument.')
             print(f'[camera] camera_ip: {camera_ip} (camera settings cam_{octet})')
         else:
             camera_ip = raw_ip
@@ -439,7 +439,7 @@ def generate_launch_description():
                         "'usb'=USB only."),
         DeclareLaunchArgument(
             'camera_ip', default_value='auto',
-            description='auto=config/cameras/cam_N.yaml sensor_host; no sensor address is inferred from the LAN octet'),
+            description='auto=inventory sensor_host (192.168.2.101 on each isolated camera link); LAN octets only select the ROS namespace'),
         DeclareLaunchArgument(
             'camera_netmask', default_value='255.255.255.0',
             description='Camera netmask on the 192.168.2.x camera link'),

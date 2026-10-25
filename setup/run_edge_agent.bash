@@ -3,18 +3,19 @@
 
 set -euo pipefail
 
+# Setup may temporarily change the camera NIC or camera IP. A periodic Main
+# health check can start this unit meanwhile, but it must not open the SDK until
+# setup releases the same per-user lock. Keep the descriptor for this runtime.
+mkdir -p "${HOME}/.ros"
+exec {camera_setup_lock_fd}>"${HOME}/.ros/sirius-camera-setup.lock"
+flock "$camera_setup_lock_fd"
+
 ws="${SIRIUS_ROBOT_DT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)}"
 nsl_src="${NSL_SRC_DIR:-${ws}/controller/src/NSL-3130AA-ROS2}"
 pose_src="${ROS_HUMANPOSE_SRC_DIR:-${ws}/controller/src/ros_humanpose}"
 
 set +u
 source "${ws}/setup/env.bash"
-if [[ -f "${ws}/controller/install/local_setup.bash" ]]; then
-    source "${ws}/controller/install/local_setup.bash"
-fi
-if [[ -f "${nsl_src}/setup/setup_dds_interface.bash" ]]; then
-    source "${ws}/setup/fleet_env.bash"
-fi
 set -u
 
 detect_edge_octet() {

@@ -3,7 +3,7 @@ set -euo pipefail
 
 setup_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="${SIRIUS_ROBOT_DT_ROOT:-$(cd "${setup_dir}/../../../.." && pwd)}"
-# Edge 161..165 use camera NIC 192.168.2.101..105 in setup/fleet.yaml.
+# Every isolated Edge camera link uses NIC .100 and sensor .101 in setup/fleet.yaml.
 # Keep the inventory authoritative so setup and the camera runtime agree.
 fleet_first_octet=161
 fleet_last_octet=165
@@ -61,14 +61,18 @@ _install_unit() {
         printf '[fleet] WARNING: unit template missing, skipped: %s\n' "$tpl" >&2
         return 0
     fi
-    sudo install -m 0644 "$tpl" "/etc/systemd/system/${target}"
-    sudo systemctl daemon-reload
-    sudo systemctl enable "$unit"
+    if ! sudo cmp -s "$tpl" "/etc/systemd/system/${target}"; then
+        sudo install -m 0644 "$tpl" "/etc/systemd/system/${target}"
+        sudo systemctl daemon-reload
+    fi
+    if ! systemctl is-enabled --quiet "$unit"; then
+        sudo systemctl enable "$unit"
+    fi
     printf '[fleet] enabled: %s\n' "$unit"
 }
 
 enable_edge_service() {
-    sudo bash "${repo_root}/setup/install_dds_network.bash"
+    sudo bash "${repo_root}/setup/common.bash" dds
     [[ "${NSL_INSTALL_EDGE_SERVICE:-1}" =~ ^(1|true|yes)$ ]] || return 0
     local user_name="${SUDO_USER:-${USER}}"
     local rh_setup="${repo_root}/controller/src/ros_humanpose/setup"
@@ -84,7 +88,7 @@ enable_edge_service() {
 }
 
 enable_host_service() {
-    sudo bash "${repo_root}/setup/install_dds_network.bash"
+    sudo bash "${repo_root}/setup/common.bash" dds
     [[ "${NSL_INSTALL_HOST_SERVICE:-1}" =~ ^(1|true|yes)$ ]] || return 0
     local user_name="${SUDO_USER:-${USER}}"
     local rh_setup="${repo_root}/controller/src/ros_humanpose/setup"
@@ -275,6 +279,13 @@ resolve_rule_addresses() {
         camera_gateway="192.168.2.1"
     fi
 
+    if [[ "$camera_ip" == "${expected_cam_nic_ip:-}" || "$camera_ip" == "${cam_nic_ip:-}" ]] ||
+       { [[ -n "${cam_iface:-}" ]] && ip -4 -o addr show dev "$cam_iface" |
+           awk '{split($4, address, "/"); print address[1]}' | grep -Fxq "$camera_ip"; }; then
+        printf '[fleet] ERROR: camera IP %s must differ from the camera NIC IP.\n' "$camera_ip" >&2
+        return 1
+    fi
+
     return 0
 }
 
@@ -452,7 +463,7 @@ if [[ "$camera_mode" != "none" ]]; then
 
     if [[ -z "$cam_nic_ip" ]]; then
         printf '[fleet] WARNING: no 192.168.2.x camera NIC IP found. Expected camera NIC: %s\n' \
-            "${expected_cam_nic_ip:-192.168.2.101}" >&2
+            "${expected_cam_nic_ip:-192.168.2.100}" >&2
         if [[ "$camera_mode" != "check" ]]; then
             printf '[fleet] ERROR: configure the camera NIC first, or run --check to inspect only.\n' >&2
             exit 1

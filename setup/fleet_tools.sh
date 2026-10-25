@@ -607,11 +607,11 @@ if [[ "${BASH_SOURCE[0]}" == "$0" && ${#BASH_SOURCE[@]} == 1 ]]; then
     command_name="$1"
     shift
     case "$command_name" in
-        msb|mcb|mvw|mtf|mtr|mvp) source "${SIRIUS_ROBOT_DT_ROOT}/setup/fleet_env.bash" ;;
-        mtd) case "${1:-}" in save|restore) ;; *) source "${SIRIUS_ROBOT_DT_ROOT}/setup/fleet_env.bash" ;; esac ;;
-        mdt) [[ "${1:-}" == bag ]] || source "${SIRIUS_ROBOT_DT_ROOT}/setup/fleet_env.bash" ;;
+        msb|mcb|mvw|mtf|mtr|mvp) source "${SIRIUS_ROBOT_DT_ROOT}/setup/env.bash" ;;
+        mtd) case "${1:-}" in save|restore) ;; *) source "${SIRIUS_ROBOT_DT_ROOT}/setup/env.bash" ;; esac ;;
+        mdt) [[ "${1:-}" == bag ]] || source "${SIRIUS_ROBOT_DT_ROOT}/setup/env.bash" ;;
     esac
-    # fleet_env sources public frontend functions; restore the native backend
+    # env.bash sources public frontend functions; restore the native backend
     # definitions with alias expansion disabled before dispatching them.
     shopt -u expand_aliases
     source "${BASH_SOURCE[0]}"

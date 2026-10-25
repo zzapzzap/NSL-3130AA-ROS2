@@ -1048,7 +1048,7 @@ void roboscanPublisher::initialise()
 	viewerParam.lidarAngle = 0;
 
 	viewerParam.frame_id = "lidar_frame";
-	viewerParam.ipAddr   = "192.168.2.201";
+	viewerParam.ipAddr   = "192.168.2.101";
 	viewerParam.netMask  = "255.255.255.0";
 	viewerParam.gwAddr   = "192.168.2.1";
 	viewerParam.usbPath  = "";

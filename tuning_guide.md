@@ -18,9 +18,11 @@
 
 ## 2. 확인된 현상과 진행 상태
 
+아래 관측·상태표는 **2026-10-05 당시 기록**이며 현재 서비스 상태나 이후 시험의 완료 여부를 뜻하지 않는다. 새 시험은 7절의 결과 양식에 별도로 기록한다.
+
 2026-10-05 사용자 반복 관측: **52/53의 상호 정렬은 대체로 맞아 보이지만, 두 대 이상 운용할 때 Depth 이상이 발생한다. 특히 53은 앞 기둥을 맞춰도 뒤 기둥·로봇이 더 멀리 늘어나 보인다.** `1.2배`는 관측 예시이며 고정 보정계수로 확정하지 않았다.
 
-| 항목 | 현재 상태 | 완료 시 남길 근거 |
+| 항목 | 당시 기록 | 완료 시 남길 근거 |
 |---|---|---|
 | 다중 카메라 Depth 이상 현상 | **확인됨 — 사용자 반복 관측** | 발생 카메라·장면·bag |
 | 원인 | ToF 광학 간섭을 우선 조사; 원인 분리 시험 대기 | 방출 OFF/ON/OFF 결과, 선택 프로파일·채널 |
@@ -32,8 +34,8 @@
 
 ### 기존 설정에서 확인한 사항
 
-- 일반 실행은 `setup/fleet.yaml`의 `parameters`가 가리키는 프로필을 사용하며, 초기 관측 폴더에 센서 설정이 없으면 시리얼별 `calib_output/{serial}/params.yaml`을 사용한다. **`calibration:=true`는 공통 calibration 파일(Channel 0)을 선택**하며, 시리얼 검출 실패도 공통 general 파일(Channel 0)로 돌아간다. 동시 녹화 전 로그로 실제 파일을 확인한다. namespace `cam_161`/`cam_162`은 장비 시리얼과 별개다.
-- 현재 저장 파일: 52=`N010005C4`/Channel 0/MinAmplitude 15, 53=`N008B060D`/Channel 1/MinAmplitude 5. 둘 다 `MOD_12Mhz`, `DB_6Mhz`, `DB_CORRECTION`, `InterferenceDetectionLimit: 0`, `UseLastValue: false`, Median/Gaussian ON, Temporal 300/Threshold 200이다. **이는 기준 기록이며 검증된 최적 프리셋이 아니다.** 장비 연결을 바꾸면 대응부터 재확인한다.
+- 일반 실행은 공통 `config/config.yaml`의 `parameters`가 가리키는 프로필을 우선 사용한다. 공통 설정이 없거나 `SIRIUS_CONFIG`로 모듈 설정을 명시하면 `setup/fleet.yaml`을 사용한다. 선택 폴더에 센서 설정이 없으면 실제 시리얼의 `calib_output/{serial}/params.yaml`을 읽고, 새 프로필은 공통 general 파일로 초기화한다. **`calibration:=true`는 공통 calibration 파일(Channel 0)을 선택**한다. 기본 Ethernet 모드에서는 장치 identity 조회 실패가 시작 오류이며, 시리얼·프로필이 모두 없는 단독 실행의 general 기본값과 구분한다. namespace `cam_161`/`cam_162`은 장비 시리얼과 별개이므로 시작 로그의 `sensor params:` 경로를 확인한다.
+- 현재 저장된 시리얼 프로필 기준: `N010005C4`는 Channel 1 / MinAmplitude 10 / `HDR_None` / int0 1000, `N008B060D`는 Channel 0 / MinAmplitude 5 / `HDR_None` / int0 350이다. 둘 다 int1/int2는 700/80이며 `MOD_12Mhz`, `DB_6Mhz`, `DB_CORRECTION`, `InterferenceDetectionLimit: 0`, `UseLastValue: false`, Median/Gaussian ON, Temporal 300/Threshold 200이다. **이는 파일 내용이며 장치 적용·거리 정확도를 확인한 최적 프리셋이 아니다.** 장비를 교환하면 실제 시리얼과 선택 파일부터 재확인한다.
 - 간섭 검출 `0`은 OFF. 채널은 이미 0/1로 다르지만 SDK 자동 채널 상태는 ROS/YAML에 노출되지 않고, 적용 후 실제 채널 readback도 없다. ROS 파라미터 조회는 요청/캐시값이지 장치 적용 성공의 증명이 아니다.
 - `DB_CORRECTION`은 phase wrapping 보정이며 카메라 간섭 제거를 보장하지 않는다. 양쪽 보조 6 MHz가 같다는 사실만으로 충돌을 확정하지 않는다.
 - RViz 표시 OFF는 적외선 방출 OFF가 아니다. 방출은 제조사가 지원하는 정지 방법 또는 해당 카메라 전원 OFF로 제어한다. 전원 OFF는 통신·전원 부하도 바꾸므로 그 조건을 기록한다. 저장 bag/snapshot은 이 시험에 반응하지 않으므로 **새 라이브 데이터**를 본다.
@@ -86,7 +88,7 @@ phase wrapping은 신호 주기를 넘는 먼 거리가 짧은 거리처럼 접�
 | `IntegrationTimeGray` | `H. intGr` | Grayscale 노출(드라이버 범위 0–40000). Depth/RGB 기본 노출과 별개이며 Gray 모드에서 의미가 있다. 높이면 밝기·포화/획득 시간이 증가할 수 있다. 현재 100; Gray 획득이 필요할 때만 조정. |
 | `GrayscaleLED` | `X. grayscale LED` | Grayscale 획득 중 LED 사용 여부. **Depth 적외선 방출 전체를 끄는 스위치가 아니다.** 간섭 OFF/ON 시험에 이 값을 대신 사용하지 않는다. |
 
-**노출 주의:** SDK 매뉴얼은 `int1 < int0`, `int2 < int1`, 미사용 `int2=0`을 안내한다. 현재 저장된 `350/700/80`은 이 순서와 다르므로 검증된 고속 프리셋으로 추천하지 않는다. `HDR_None`이어도 추가 노출값이 무시된다고 단정할 수 없다. 장비/SDK 동작과 순서를 확인한 뒤 정합된 노출 묶음을 기준으로 ±20%씩 비교한다. 거리·포화·점 수가 나빠지면 복귀한다. 현재 ROS 드라이버에는 `fps:=30` 같은 Hz 설정 인자가 없다.
+**노출 주의:** SDK 매뉴얼은 `int1 < int0`, `int2 < int1`, 미사용 `int2=0`을 안내한다. 공통 general/calibration 파일과 `N008B060D`에 남은 `350/700/80`은 이 순서와 다르므로 검증된 고속 프리셋으로 추천하지 않는다. `N010005C4`의 저장값은 `1000/700/80`이다. `HDR_None`이어도 추가 노출값이 무시된다고 단정할 수 없다. 장비/SDK 동작과 순서를 확인한 뒤 정합된 노출 묶음을 기준으로 ±20%씩 비교한다. 거리·포화·점 수가 나빠지면 복귀한다. 현재 ROS 드라이버에는 `fps:=30` 같은 Hz 설정 인자가 없다.
 
 ### 4-2. 렌즈·좌표·시야·표시 설정
 
@@ -128,7 +130,7 @@ phase wrapping은 신호 주기를 넘는 먼 거리가 짧은 거리처럼 접�
 
 ```bash
 # 각 Edge: 실제 선택 경로를 시작 로그에서 확인한 다음 백업한다.
-source ~/SiriusRobotDT/setup/fleet_env.bash
+source ~/SiriusRobotDT/setup/env.bash
 cd "$SIRIUS_ROBOT_DT_ROOT"
 NSL_TRIAL_DIR="/tmp/nsl_tuning_$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$NSL_TRIAL_DIR"
@@ -144,6 +146,8 @@ ros2 topic info -v /cam_162/camera/point_cloud
 ```
 
 위 `cp`는 로그가 해당 시리얼 파일을 선택한 경우의 예시다. 다른 경로가 선택됐다면 **그 파일**을 백업한다. `ros2 param dump` 결과는 진단용 ROS YAML이며 센서 `params.yaml`의 대체 파일이 아니다. 임시 백업은 작업 종료 전에 bag 옆 결과 폴더로 복사해 보관한다.
+
+원시 XYZI cloud는 진단 구독자가 있을 때 추가 생성한다. `ros2 topic hz .../point_cloud`나 원본을 포함한 bag 녹화도 이 생성을 활성화하므로 일반 RGB cloud 운용과 원본 진단의 부하는 따로 기록한다.
 
 아래는 작업자가 **B/D 단계에서 한 명령씩 적용·측정할 예시**이며, 일괄 실행할 프리셋이 아니다.
 
@@ -168,10 +172,12 @@ ros2 bag info "$NSL_DIAG_BAG"
 - 현재 `RGB_DISTANCE` 모드는 `/camera/ampl` 메시지를 내보내지 않는다. XYZI의 `intensity`에는 amplitude가 있다. 이미지가 필요할 때만 `C. imageType`을 `RGB_DISTANCE_AMPLITUDE`로 시험하고 `/cam_161/camera/ampl`, `/cam_162/camera/ampl`을 추가한다. 추가 모드의 Hz도 재측정한다.
 - 기존 `mrb`는 RGB 압축 이미지·RGB cloud·두 로봇 pose·TF를 녹화한다. 최종 운용 비교에는 `mrb /cam_161/camera/depth/image_raw /cam_162/camera/depth/image_raw`로 Depth도 포함할 수 있다. 원하는 토픽이 실제 메시지를 내보내는지 확인한다.
 - `ros2 topic hz`는 그 진단 구독자의 수신 속도다. Humble에서 `hz`에 QoS 옵션을 임의로 붙이지 않는다. bag의 토픽별 메시지 수/유효 기록 시간, 프레임 간격도 확인한다. 원시 cloud는 reliable이므로 수신기의 QoS도 점검한다.
-- 한 bag에 같이 녹화해도 노출 동기화·광학 간섭 방지·무손실은 보장되지 않는다. Depth/cloud stamp는 드라이버 발행 시각이며 카메라 간 하드웨어 동기화 시각이 아니다.
+- 한 bag에 같이 녹화해도 노출 동기화·광학 간섭 방지·무손실은 보장되지 않는다. Depth/cloud stamp는 SDK 프레임 수신 후 드라이버가 붙인 ROS 시각이며 카메라 간 하드웨어 노출 동기화 시각이 아니다.
 - 재시험/복귀는 드라이버 종료 후 백업한 **센서 YAML**을 원래 경로에 복사하고 재시작해서 값·출력을 확인한다. 전원만 껐다 켜서는 자동 저장한 변경이 복구되지 않는다.
 
 ## 7. 작업 결과 — 튜닝할 때 반드시 갱신
+
+아래 표는 새 튜닝 실행을 위한 기록 양식이다. 빈 항목은 현재 장치의 미검증 상태를 모두 집계한 진단 결과가 아니다.
 
 작업일/담당: 미실행 · 최종 동시 카메라 수: 미측정 · 장면/기준거리: 미측정
 
