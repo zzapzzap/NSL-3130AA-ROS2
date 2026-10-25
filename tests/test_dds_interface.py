@@ -40,7 +40,7 @@ CHECK
             return json.loads(result.stdout),result.stderr
 
     def test_only_edges_and_main_are_dds_participants(self):
-        for octet in (161,162,163,164,166):
+        for octet in (161,162,163,164,165,166):
             with self.subTest(octet=octet):
                 data,warning=self.run_setup([f'192.168.3.{octet}'])
                 self.assertEqual(warning,'')
@@ -68,7 +68,7 @@ CHECK
         self.assertEqual(data['env']['ROS_DISCOVERY_SERVER'],'192.168.3.166:11811')
 
     def test_plcs_unused_hosts_and_other_subnets_are_excluded(self):
-        for a in ('192.168.3.155','192.168.3.160','192.168.3.165','192.168.3.167',
+        for a in ('192.168.3.155','192.168.3.160','192.168.3.167',
                   '192.168.3.168','192.168.3.169','192.168.3.170','192.168.3.1610','10.8.0.67'):
             with self.subTest(address=a):
                 data,warning=self.run_setup([a])

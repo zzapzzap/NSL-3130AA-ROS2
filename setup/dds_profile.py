@@ -9,12 +9,12 @@ import os
 from pathlib import Path
 import tempfile
 
-PEERS = tuple(f'192.168.3.{n}' for n in (161, 162, 163, 164, 166))
+PEERS = tuple(f'192.168.3.{n}' for n in (161, 162, 163, 164, 165, 166))
 
 
 def profile_xml(address, server=False):
     if address not in PEERS or (server and address != PEERS[-1]):
-        raise ValueError('DDS requires an Edge .161-.164 or the main server .166')
+        raise ValueError('DDS requires an Edge .161-.165 or the main server .166')
     discovery = ('<discovery_config><discoveryProtocol>SERVER</discoveryProtocol></discovery_config>' if server else '')
     port = '<port>11811</port>' if server else ''
     guid = '<prefix>44.53.00.5f.45.50.52.4f.53.49.4d.41</prefix>' if server else ''

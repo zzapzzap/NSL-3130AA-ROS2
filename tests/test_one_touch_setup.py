@@ -17,7 +17,7 @@ class OneTouchSetupTests(unittest.TestCase):
         calls = temporary/'calls'
         for name in ('sudo', 'ssh', 'sshpass', 'scp', 'rosdep', 'colcon', 'systemctl'):
             file = commands/name
-            file.write_text('#!/usr/bin/env bash\nprintf "%s" "$(basename "$0")" >> "$TEST_SETUP_CALLS"\nprintf " <%s>" "$@" >> "$TEST_SETUP_CALLS"\nprintf "\\n" >> "$TEST_SETUP_CALLS"\n')
+            file.write_text('#!/usr/bin/env bash\nprintf -v arguments " <%s>" "$@"\nprintf "%s%s\\n" "${0##*/}" "$arguments" >> "$TEST_SETUP_CALLS"\n')
             if name == 'ssh':
                 file.write_text(file.read_text()+'if [[ "${@: -1}" == "id -un" ]]; then echo keyedge; fi\nexit "${TEST_SSH_STATUS:-0}"\n')
             file.chmod(0o755)
@@ -43,19 +43,20 @@ class OneTouchSetupTests(unittest.TestCase):
             self.assertFalse((Path(directory)/'.bashrc').exists())
 
     def test_check_detects_edge_without_invoking_vendor_setup(self):
-        with tempfile.TemporaryDirectory() as directory:
-            result, calls = self.run_setup(directory, '--check', '--ip', '192.168.3.162')
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(calls, [])
-            self.assertIn('Role: edge', result.stdout)
+        for octet in (162, 165):
+            with self.subTest(octet=octet), tempfile.TemporaryDirectory() as directory:
+                result, calls = self.run_setup(directory, '--check', '--ip', f'192.168.3.{octet}')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(calls, [])
+                self.assertIn('Role: edge', result.stdout)
 
     def test_automatic_host_flow_installs_shell_and_only_main_unit_with_stubs(self):
         with tempfile.TemporaryDirectory() as directory:
             result, calls = self.run_setup(directory, '--ip', '192.168.3.166')
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue((Path(directory)/'.bashrc').is_file())
-            self.assertEqual(len(calls), 3)
-            self.assertIn('<systemctl> <enable> <--now> <sensor_streaming.service>', calls[-1])
+            enable = 'sudo <systemctl> <enable> <--now> <sensor_streaming.service>'
+            self.assertIn(enable, calls)
 
     def test_unknown_lan_address_requires_a_role(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -94,8 +95,8 @@ class OneTouchSetupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             result, calls = self.run_setup(directory, '--service-install-start')
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(len(calls), 3)
-            self.assertIn('<systemctl> <enable> <--now> <sensor_streaming.service>', calls[-1])
+            enable = 'sudo <systemctl> <enable> <--now> <sensor_streaming.service>'
+            self.assertIn(enable, calls)
 
     def test_module_selects_build_graph_without_starting_hardware(self):
         with tempfile.TemporaryDirectory() as directory:

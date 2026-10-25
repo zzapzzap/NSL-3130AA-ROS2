@@ -1,0 +1,67 @@
+%YAML:1.0
+---
+camera_id: N008B060D
+image_topic: /cam_162/camera/rgb/image_raw
+namespace: cam_162
+camera_frame: cam_162_camera_frame
+lidar_frame: cam_162_lidar_frame
+reference_frame: stag_marker
+library_hd: 21
+marker_id: 7
+marker_size: 0.32000000000000001
+num_frames: 10
+reproj_rmse_px: 0.23334536770399125
+depth_refined: 1
+depth_refine_method: slide
+depth_delta_m: 0.28322156789172714
+depth_plane_delta_m: -0.0096696007811735984
+R: !!opencv-matrix
+   rows: 3
+   cols: 3
+   dt: d
+   data: [ -0.62923837668808869, -0.77714287012041283,
+       0.010393494308806905, -0.46469314926002908, 0.36546700260967702,
+       -0.80653217358906115, 0.62299224901577732, -0.51233078125807197,
+       -0.59109883119640672 ]
+t: !!opencv-matrix
+   rows: 3
+   cols: 1
+   dt: d
+   data: [ -1.2877211719750201, 0.29832513746123251, 3.2142402064163633 ]
+tag_count: 2
+tag_0_id: 3
+tag_0_size: 0.19
+tag_0_R: !!opencv-matrix
+   rows: 3
+   cols: 3
+   dt: d
+   data: [ 0.090197425977656787, -0.99558130648227883,
+       0.026120615039548191, -0.58010731943072358, -0.073839145675209633,
+       -0.81118634018877311, 0.80953068026474817, 0.058014159900789057,
+       -0.58420410385506549 ]
+tag_0_t: !!opencv-matrix
+   rows: 3
+   cols: 1
+   dt: d
+   data: [ -0.74812488911422836, 0.44985696462303049, 2.9089782570252045 ]
+tag_0_depth_delta_m: 0.16169726544699525
+tag_0_depth_refine_method: slide
+tag_0_depth_plane_delta_m: -0.0010370035376710742
+tag_1_id: 7
+tag_1_size: 0.32000000000000001
+tag_1_R: !!opencv-matrix
+   rows: 3
+   cols: 3
+   dt: d
+   data: [ -0.62923837668808869, -0.77714287012041283,
+       0.010393494308806905, -0.46469314926002908, 0.36546700260967702,
+       -0.80653217358906115, 0.62299224901577732, -0.51233078125807197,
+       -0.59109883119640672 ]
+tag_1_t: !!opencv-matrix
+   rows: 3
+   cols: 1
+   dt: d
+   data: [ -1.2877211719750201, 0.29832513746123251, 3.2142402064163633 ]
+tag_1_depth_delta_m: 0.28322156789172714
+tag_1_depth_refine_method: slide
+tag_1_depth_plane_delta_m: -0.0096696007811735984

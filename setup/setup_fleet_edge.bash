@@ -3,14 +3,14 @@ set -euo pipefail
 
 setup_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="${SIRIUS_ROBOT_DT_ROOT:-$(cd "${setup_dir}/../../../.." && pwd)}"
-# Edge 161..164 use camera NIC 192.168.2.101..104 in setup/fleet.yaml.
+# Edge 161..165 use camera NIC 192.168.2.101..105 in setup/fleet.yaml.
 # Keep the inventory authoritative so setup and the camera runtime agree.
 fleet_first_octet=161
-fleet_last_octet=164
+fleet_last_octet=165
 host_first_octet=166
 host_last_octet=169
 host_ip="${NSL_HOST_IP:-192.168.3.166}"
-default_edge_octets="${NSL_EDGE_OCTETS:-161,162,163,164}"
+default_edge_octets="${NSL_EDGE_OCTETS:-161,162,163,164,165}"
 camera_ip="${NSL_CAMERA_IP:-auto}"
 camera_netmask="${NSL_CAMERA_NETMASK:-255.255.255.0}"
 camera_gateway="${NSL_CAMERA_GATEWAY:-192.168.2.1}"
@@ -21,6 +21,9 @@ legacy_camera_ip="${NSL_LEGACY_CAMERA_IP:-192.168.2.220}"
 camera_apply_wait_sec="${NSL_CAMERA_APPLY_WAIT_SEC:-15}"
 domain_id="${ROS_DOMAIN_ID:-42}"
 fleet_role="${NSL_FLEET_ROLE:-auto}"
+factory_addr_added=0
+factory_route_added=0
+last_camera_write_saved=0
 
 usage() {
     printf 'Usage: %s [--check|--set-camera-ip|--host-only]\n' "$0"
@@ -146,9 +149,18 @@ wait_for_ping() {
 cleanup_factory_route() {
     local iface="${1:-}"
     [[ -n "$iface" ]] || return 0
-    sudo ip route del "${factory_camera_ip}/32" dev "$iface" 2>/dev/null || true
-    sudo ip addr del "${factory_host_ip}/24" dev "$iface" 2>/dev/null || true
+    if (( factory_route_added )); then
+        sudo ip route del "${factory_camera_ip}/32" dev "$iface" src "$factory_host_ip" 2>/dev/null || true
+        factory_route_added=0
+    fi
+    if (( factory_addr_added )); then
+        sudo ip addr del "${factory_host_ip}/24" dev "$iface" 2>/dev/null || true
+        factory_addr_added=0
+    fi
 }
+
+# Never remove an address or route that existed before this setup invocation.
+trap 'cleanup_factory_route "${cam_iface:-}"' EXIT
 
 detect_usb_serial() {
     python3 "${repo_root}/controller/src/NSL-3130AA-ROS2/roboscan_nsl3130/scripts/detect_camera_id.py" 2>/dev/null || true
@@ -162,6 +174,12 @@ run_change_camera_ip() {
     output="$(ros2 run roboscan_nsl3130 change_camera_ip "$camera_ip" "$camera_netmask" "$camera_gateway" "$endpoint" 2>&1)"
     status=$?
     set -e
+    last_camera_write_saved=0
+    # The utility's status 2 means flash save succeeded but the IP-write ACK
+    # was missing; the camera may require a power cycle to apply that save.
+    if (( status == 0 || status == 2 )); then
+        last_camera_write_saved=1
+    fi
 
     printf '%s\n' "$output"
 
@@ -182,14 +200,32 @@ run_change_camera_ip() {
     return "$status"
 }
 
+# 0: reachable and saved; 2: saved, awaiting restart; 3: reachable, save unverified.
+verify_camera_write() {
+    if wait_for_ping "$camera_ip" "$camera_apply_wait_sec"; then
+        printf '[fleet] Camera reachable at %s.\n' "$camera_ip"
+        if (( last_camera_write_saved )); then
+            return 0
+        fi
+        printf '[fleet] ERROR: camera is reachable, but flash save was not confirmed; its IP may revert after a power cycle.\n' >&2
+        return 3
+    fi
+    if (( last_camera_write_saved )); then
+        printf '[fleet] IP write is saved but %s is not reachable yet. Power-cycle the camera, then verify: ping -c 1 %s\n' "$camera_ip" "$camera_ip"
+        return 2
+    fi
+    return 1
+}
+
 try_reachable_ip_write() {
     local source_ip="$1"
     local label="$2"
 
-    [[ -n "$source_ip" ]] || return 1
-    [[ "$source_ip" != "$camera_ip" ]] || return 1
+    # 4 means this endpoint was unavailable, so another recovery path may run.
+    [[ -n "$source_ip" ]] || return 4
+    [[ "$source_ip" != "$camera_ip" ]] || return 4
     if ! ping_once "$source_ip"; then
-        return 1
+        return 4
     fi
 
     printf '[fleet] Trying Ethernet IP write via %s %s -> %s\n' "$label" "$source_ip" "$camera_ip"
@@ -199,12 +235,7 @@ try_reachable_ip_write() {
         printf '[fleet] Ethernet write via %s returned nonzero. Checking %s anyway ...\n' "$source_ip" "$camera_ip" >&2
     fi
 
-    if wait_for_ping "$camera_ip" "$camera_apply_wait_sec"; then
-        printf '[fleet] Camera reachable at %s.\n' "$camera_ip"
-        return 0
-    fi
-
-    return 1
+    verify_camera_write
 }
 
 is_fleet_octet() {
@@ -255,7 +286,7 @@ print_address_rule() {
 }
 
 ensure_camera_ip() {
-    local serial
+    local serial result source_ip
     local attempted_usb=0
     last_reported_camera_ip=""
 
@@ -270,29 +301,35 @@ ensure_camera_ip() {
         printf '[fleet] Trying USB IP write for serial %s -> %s\n' "$serial" "$camera_ip"
         if run_change_camera_ip "$serial"; then
             printf '[fleet] USB IP write saved. Waiting up to %ss for %s ...\n' "$camera_apply_wait_sec" "$camera_ip"
-            if wait_for_ping "$camera_ip" "$camera_apply_wait_sec"; then
-                printf '[fleet] Camera reachable at %s.\n' "$camera_ip"
-                return 0
-            fi
-            printf '[fleet] USB path did not make %s reachable; trying reachable Ethernet IPs before factory setup.\n' "$camera_ip" >&2
         else
             printf '[fleet] USB write returned nonzero. Checking %s before Ethernet setup ...\n' "$camera_ip" >&2
-            if wait_for_ping "$camera_ip" "$camera_apply_wait_sec"; then
-                printf '[fleet] Camera reachable at %s.\n' "$camera_ip"
-                return 0
+        fi
+        if verify_camera_write; then
+            return 0
+        else
+            result=$?
+            # A confirmed save awaiting restart or an unconfirmed flash save is
+            # not corrected by repeating the IP write through another endpoint.
+            if (( result != 1 )); then
+                return "$result"
             fi
-            printf '[fleet] USB write did not make %s reachable; trying reachable Ethernet IPs before factory setup.\n' "$camera_ip" >&2
-        fi
-
-        if try_reachable_ip_write "$last_reported_camera_ip" "reported current IP"; then
-            return 0
-        fi
-        if [[ "$legacy_camera_ip" != "$last_reported_camera_ip" ]] && try_reachable_ip_write "$legacy_camera_ip" "legacy IP"; then
-            return 0
         fi
     else
         printf '[fleet] USB camera serial not detected; trying Ethernet setup path (%s).\n' "$factory_camera_ip" >&2
     fi
+
+    # An explicitly supplied current Ethernet IP often shares the existing
+    # camera subnet. Use that working route without altering NIC addresses.
+    for source_ip in "$last_reported_camera_ip" "$legacy_camera_ip" "$factory_camera_ip"; do
+        if try_reachable_ip_write "$source_ip" "reachable current IP"; then
+            return 0
+        else
+            result=$?
+            if (( result != 4 )); then
+                return "$result"
+            fi
+        fi
+    done
 
     if [[ -z "$cam_iface" ]]; then
         printf '[fleet] ERROR: no 192.168.2.x camera NIC found for Ethernet setup.\n' >&2
@@ -303,52 +340,44 @@ ensure_camera_ip() {
         return 1
     fi
 
-    cleanup_factory_route "$cam_iface"
-    if ! sudo ip addr add "${factory_host_ip}/24" dev "$cam_iface" noprefixroute; then
-        printf '[fleet] ERROR: failed to add temporary %s/24 on %s.\n' "$factory_host_ip" "$cam_iface" >&2
-        cleanup_factory_route "$cam_iface"
+    # A preexisting host route may carry user-specific settings. Leave it intact
+    # rather than replacing it and then deleting it during cleanup.
+    if [[ -n "$(ip -4 route show exact "${factory_camera_ip}/32")" ]]; then
+        printf '[fleet] ERROR: an existing host route to %s was preserved; check its interface/source address before retrying.\n' "$factory_camera_ip" >&2
         return 1
     fi
-    if ! sudo ip route replace "${factory_camera_ip}/32" dev "$cam_iface" src "$factory_host_ip"; then
+    if ! ip -4 -o addr show dev "$cam_iface" | awk -v address="$factory_host_ip" '
+        {split($4, value, "/"); if (value[1] == address) found=1}
+        END {exit !found}
+    '; then
+        if ! sudo ip addr add "${factory_host_ip}/24" dev "$cam_iface" noprefixroute; then
+            printf '[fleet] ERROR: failed to add temporary %s/24 on %s.\n' "$factory_host_ip" "$cam_iface" >&2
+            return 1
+        fi
+        factory_addr_added=1
+    fi
+    if ! sudo ip route add "${factory_camera_ip}/32" dev "$cam_iface" src "$factory_host_ip"; then
         printf '[fleet] ERROR: failed to add temporary route to %s on %s.\n' "$factory_camera_ip" "$cam_iface" >&2
         cleanup_factory_route "$cam_iface"
         return 1
     fi
+    factory_route_added=1
 
-    if ! ping_once "$factory_camera_ip"; then
-        if (( attempted_usb )); then
-            printf '[fleet] Camera IP may be saved, but neither target %s nor factory %s is reachable now.\n' "$camera_ip" "$factory_camera_ip" >&2
-            printf '[fleet] Power-cycle/replug the camera, then run: ping -c 1 %s\n' "$camera_ip" >&2
-            cleanup_factory_route "$cam_iface"
-            return 2
+    if try_reachable_ip_write "$factory_camera_ip" "factory route"; then
+        result=0
+    else
+        result=$?
+        if (( result == 4 )); then
+            if (( attempted_usb )); then
+                printf '[fleet] Camera IP save was not confirmed, and neither target %s nor factory %s is reachable now.\n' "$camera_ip" "$factory_camera_ip" >&2
+            else
+                printf '[fleet] ERROR: camera is not reachable at target %s or factory %s.\n' "$camera_ip" "$factory_camera_ip" >&2
+            fi
+            result=1
         fi
-        printf '[fleet] ERROR: camera is not reachable at target %s or factory %s.\n' "$camera_ip" "$factory_camera_ip" >&2
-        cleanup_factory_route "$cam_iface"
-        return 1
-    fi
-
-    printf '[fleet] Writing camera IP over Ethernet %s -> %s\n' "$factory_camera_ip" "$camera_ip"
-    if ! run_change_camera_ip "$factory_camera_ip"; then
-        printf '[fleet] Ethernet write returned nonzero. Checking %s before failing ...\n' "$camera_ip" >&2
-        if ! wait_for_ping "$camera_ip" "$camera_apply_wait_sec"; then
-            printf '[fleet] ERROR: Ethernet setup failed and %s is still unreachable.\n' "$camera_ip" >&2
-            cleanup_factory_route "$cam_iface"
-            return 1
-        fi
-        printf '[fleet] Camera reachable at %s.\n' "$camera_ip"
-        cleanup_factory_route "$cam_iface"
-        return 0
     fi
     cleanup_factory_route "$cam_iface"
-
-    printf '[fleet] Ethernet IP write finished. Waiting up to %ss for %s ...\n' "$camera_apply_wait_sec" "$camera_ip"
-    if wait_for_ping "$camera_ip" "$camera_apply_wait_sec"; then
-        printf '[fleet] Camera reachable at %s.\n' "$camera_ip"
-        return 0
-    fi
-
-    printf '[fleet] IP write is saved but %s is not reachable yet. Power-cycle the camera, then verify: ping -c 1 %s\n' "$camera_ip" "$camera_ip"
-    return 2
+    return "$result"
 }
 
 mode="${1:-}"
@@ -468,10 +497,7 @@ if [[ "$camera_mode" != "none" ]]; then
     fi
 
     if [[ "$camera_mode" == "strict" ]]; then
-        if (( camera_result == 1 )); then
-            exit 1
-        fi
-        exit 0
+        exit "$camera_result"
     fi
 fi
 
@@ -489,4 +515,6 @@ if (( camera_result == 1 )); then
     printf '  %s --set-camera-ip\n' "$0"
 elif (( camera_result == 2 )); then
     printf '[fleet] NOTE: camera IP is saved but needs a camera power-cycle before strict Ethernet launch.\n'
+elif (( camera_result == 3 )); then
+    printf '[fleet] NOTE: camera is reachable, but flash save was not confirmed. Reconnect and save before relying on this IP after a power cycle.\n'
 fi

@@ -262,8 +262,8 @@ def mark_mtf(cameras, since):
     if not math.isfinite(since) or since < 0:
         raise ValueError('mtf request time must be a finite nonnegative timestamp.')
     state = require('mvw')
-    if not cameras or any(not str(camera).isdigit() or not 161 <= int(camera) <= 164 for camera in cameras):
-        raise ValueError('Current mtf requires observed cameras 161..164.')
+    if not cameras or any(not str(camera).isdigit() or not 161 <= int(camera) <= 165 for camera in cameras):
+        raise ValueError('Current mtf requires observed cameras 161..165.')
     inventory_file, data = camera_settings()
     completed = {}
     for camera in cameras:
@@ -391,7 +391,7 @@ def ready_status(prepared, key, payload, selected_at_ns, config):
             and payload.get('octet') == key.removeprefix('cam_'))
 
 
-def wait_pose_ready(prepared, selected_at_ns, timeout=10):
+def wait_pose_ready(prepared, selected_at_ns, timeout=120):
     """Require fresh latched model status and live nodes, without requiring a person."""
     import rclpy
     from rclpy.context import Context

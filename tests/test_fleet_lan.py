@@ -64,8 +64,8 @@ class FleetLanTests(unittest.TestCase):
             source "$TEST_EXEC/fleet_tools.sh"
             ping() { printf "%s\\n" "${@: -1}" >> "$TEST_PING_LOG"; }
             test -z "$(_nsl_config_edges)"
-            test "$(_nsl_edges | tr '\\n' ' ')" = '161 162 163 164 '
-            test "$(sort -u "$TEST_PING_LOG" | tr '\\n' ' ')" = '192.168.3.161 192.168.3.162 192.168.3.163 192.168.3.164 '
+            test "$(_nsl_edges | tr '\\n' ' ')" = '161 162 163 164 165 '
+            test "$(sort -u "$TEST_PING_LOG" | tr '\\n' ' ')" = '192.168.3.161 192.168.3.162 192.168.3.163 192.168.3.164 192.168.3.165 '
         ''', config='Edge 192.168.3.52\n    id legacy_one\nEdge 53\n    id legacy_two\n')
         self.assertEqual(result.returncode, 0, result.stderr)
 
@@ -74,8 +74,8 @@ class FleetLanTests(unittest.TestCase):
             source "$TEST_EXEC/fleet_tools.sh"
             ping() { printf "%s\\n" "${@: -1}" >> "$TEST_PING_LOG"; }
             test "$(_nsl_config_edges | tr '\\n' ' ')" = '161 163 '
-            test "$(_nsl_edges | tr '\\n' ' ')" = '161 162 163 164 '
-            test "$(sort -u "$TEST_PING_LOG" | tr '\\n' ' ')" = '192.168.3.161 192.168.3.162 192.168.3.163 192.168.3.164 '
+            test "$(_nsl_edges | tr '\\n' ' ')" = '161 162 163 164 165 '
+            test "$(sort -u "$TEST_PING_LOG" | tr '\\n' ' ')" = '192.168.3.161 192.168.3.162 192.168.3.163 192.168.3.164 192.168.3.165 '
         ''', config='Edge 52\nEdge 192.168.3.161\nEdge 192.168.3.163\nEdge 192.168.3.166\nEdge 192.168.3.1610\n')
         self.assertEqual(result.returncode, 0, result.stderr)
 

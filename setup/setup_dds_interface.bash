@@ -2,10 +2,10 @@
 # Fleet DDS uses unicast discovery at .166 and only the equipment LAN NIC.
 _nsl_lan_ip="$(ip -4 -o addr show 2>/dev/null | awk '
 {for (i=1;i<NF;i++) if ($i=="inet") {split($(i+1),a,"/");
- if (a[1] ~ /^192[.]168[.]3[.](16[1-4]|166)$/) {print a[1];exit}}}')"
+ if (a[1] ~ /^192[.]168[.]3[.](16[1-5]|166)$/) {print a[1];exit}}}')"
 unset ROS_DISCOVERY_SERVER ROS_SUPER_CLIENT FASTRTPS_DEFAULT_PROFILES_FILE FASTDDS_DEFAULT_PROFILES_FILE
 if [[ -z "$_nsl_lan_ip" ]]; then
-    echo '[nsl-dds] WARNING: no local DDS address (.161-.164 or .166); fleet setup skipped.' >&2
+    echo '[nsl-dds] WARNING: no local DDS address (.161-.165 or .166); fleet setup skipped.' >&2
 elif [[ "${NSL_DDS_MODE:-server}" != server ]]; then
     echo '[nsl-dds] WARNING: only server mode is allowed; multicast DDS is disabled.' >&2
 else

@@ -10,7 +10,7 @@
 # Explicit administration: msb restarts camera units; mcb shares/builds the project.
 # SSH keys are preferred; mixed accounts and optional password fallback belong in
 # ~/.edges.conf. Mirroring preserves calib_output/, weight/, and dataset/.
-# Targets are online Edges 161..164, excluding this host; NSL_EDGES can select a subset.
+# Targets are online Edges 161..165, excluding this host; NSL_EDGES can select a subset.
 
 # If NSL_FLEET_USER is empty, ssh uses ~/.ssh/config or the local username.
 # Set NSL_FLEET_USER=sb only when every edge uses the same account.
@@ -21,7 +21,7 @@ NSL_FLEET_CONFIG_LEGACY="${NSL_FLEET_CONFIG_LEGACY:-$HOME/.nsl_fleet/edges.conf}
 NSL_LOCAL_WS="${NSL_LOCAL_WS:-${SIRIUS_ROBOT_DT_ROOT}/controller}"
 NSL_REMOTE_PROJECT="${NSL_REMOTE_PROJECT:-~/SiriusRobotDT}"
 NSL_EDGE_LO="${NSL_EDGE_LO:-161}"
-NSL_EDGE_HI="${NSL_EDGE_HI:-164}"
+NSL_EDGE_HI="${NSL_EDGE_HI:-165}"
 # Never mirrored by mgp (per-edge state, huge binaries, or distributed elsewhere):
 NSL_MIRROR_EXCLUDES=(--exclude='.git' --exclude='.claude/' --exclude='__pycache__/' --exclude='*.pyc'
                      --exclude='calib_output/' --exclude='weight/' --exclude='dataset/'
@@ -334,6 +334,14 @@ PY
 # New single/multi-view training using the saved second alignment.
 mtr() {
     (($# == 0)) || { echo 'Usage: mtr'; return 2; }
+    local status_code
+    if python3 "${SIRIUS_ROBOT_DT_ROOT}/controller/src/ros_humanpose/setup/distributed_training.py" --attach-running; then
+        return 0
+    else
+        status_code=$?
+        [[ "$status_code" != 130 ]] || return 0
+        [[ "$status_code" == 3 ]] || return "$status_code"
+    fi
     _nsl_workflow pose
 }
 
@@ -470,7 +478,7 @@ mrb() {
     local transport="${NSL_ROSBAG_RGB_TRANSPORT:-compressed}" suffix='' output
     if [[ "${1:-}" == -h || "${1:-}" == --help ]]; then
         echo 'Usage: mrb [extra ros2 bag record options/topics]'
-        echo 'One HOST bag: camera 161..164 JPEG RGB + RGB PointCloud + loading/unloading pose + TF. Stop/save: Ctrl+C.'
+        echo 'One HOST bag: camera 161..165 JPEG RGB + RGB PointCloud + loading/unloading pose + TF. Stop/save: Ctrl+C.'
         echo 'Optional raw Image input: NSL_ROSBAG_RGB_TRANSPORT=raw mrb'
         return 0
     fi
@@ -482,7 +490,7 @@ mrb() {
     mkdir -p "$HOME/Desktop/ROSBAG" || return
     echo "[mrb] HOST -> $output (RGB: $transport; Ctrl+C to stop/save)"
     local camera topics=()
-    for camera in ${NSL_ROSBAG_CAMERAS:-161 162 163 164}; do
+    for camera in ${NSL_ROSBAG_CAMERAS:-161 162 163 164 165}; do
         [[ "$camera" =~ ^[0-9]+$ ]] || { echo '[mrb] NSL_ROSBAG_CAMERAS needs numeric camera IDs.' >&2; return 2; }
         topics+=("/cam_${camera}/camera/rgb/image_raw${suffix}" "/cam_${camera}/camera/point_cloud_rgb")
     done
