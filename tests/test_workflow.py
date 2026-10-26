@@ -315,6 +315,18 @@ class WorkflowTests(unittest.TestCase):
             with patch.object(workflow, 'session_file', return_value=path):
                 self.assertIsNone(workflow.saved_mtd())
 
+    def test_missing_saved_snapshot_reports_the_missing_path_and_recovery(self):
+        for missing in ('snapshot.yaml', 'captures/cam_161.npz'):
+            with self.subTest(missing=missing), tempfile.TemporaryDirectory() as directory:
+                path, _ = self.fixture_mtd(directory)
+                absent = Path(directory)/missing
+                absent.unlink()
+                with patch.object(workflow, 'session_file', return_value=path):
+                    with self.assertRaisesRegex(ValueError, 'is missing') as error:
+                        workflow.saved_mtd()
+                self.assertIn(str(absent), str(error.exception))
+                self.assertIn('run mtd', str(error.exception))
+
     def test_closing_new_mtd_without_saving_does_not_replace_the_prior_receipt(self):
         with tempfile.TemporaryDirectory() as directory:
             path,_=self.fixture_mtd(directory)

@@ -319,6 +319,9 @@ def saved_mtd():
     if not inventory_file:
         raise ValueError('Saved mtd has no capture hash inventory.')
     inventory_path = (path.parent/str(inventory_file)).resolve()
+    if not inventory_path.is_file():
+        raise ValueError(f'Saved mtd capture inventory is missing: {inventory_path}. '
+                         'Restore the original snapshot directory, or run mtd and explicitly save a new placement before mvp.')
     inventory = read_yaml(inventory_path)
     cameras = snapshot.get('camera_ids')
     if not isinstance(cameras, list) or not cameras:
@@ -328,6 +331,9 @@ def saved_mtd():
         capture = inventory.get('cameras', {}).get(name, {})
         file = inventory_path.parent/str(capture.get('file', ''))
         sha256 = capture.get('sha256')
+        if not file.is_file():
+            raise ValueError(f'Saved mtd capture file is missing for {name}: {file}. '
+                             'Restore the original snapshot directory, or run mtd and explicitly save a new placement before mvp.')
         if (not isinstance(sha256, str) or not file.is_file() or digest(file) != sha256
                 or session.get('camera_states', {}).get(name, {}).get('capture_sha256') != sha256):
             raise ValueError(f'Saved mtd capture hash does not match: {name}')
